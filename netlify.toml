@@ -3,6 +3,20 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  VITE_API_BASE_URL    = "/api"
+  VITE_API_DIRECT_URL  = "https://split-app-api.fly.dev"
+
+# Proxy all API calls through Netlify so cookies are same-origin (fixes iOS Safari ITP).
+# The OAuth login/callback flow goes directly to fly.dev (see VITE_API_DIRECT_URL).
+# Must come before the SPA catch-all.
+[[redirects]]
+  from   = "/api/*"
+  to     = "https://split-app-api.fly.dev/:splat"
+  status = 200
+  force  = true
+
+# SPA catch-all
 [[redirects]]
   from   = "/*"
   to     = "/index.html"

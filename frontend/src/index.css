@@ -56,6 +56,11 @@ body {
   color: #738091;
 }
 
+@media (max-width: 640px) {
+  .app-navbar-brand { white-space: nowrap; }
+  .app-navbar-email { display: none; }
+}
+
 /* ─── Page shell ─────────────────────────────────────────────────────────── */
 
 /* Full-width pages with a max-width shell */

@@ -24,7 +24,7 @@ export default function LoginPage() {
           large
           fill
           icon="log-in"
-          onClick={() => { window.location.href = `${import.meta.env.VITE_API_BASE_URL ?? ''}/auth/login` }}
+          onClick={() => { window.location.href = `${import.meta.env.VITE_API_DIRECT_URL ?? import.meta.env.VITE_API_BASE_URL ?? ''}/auth/login` }}
         >
           Sign in with Google
         </Button>

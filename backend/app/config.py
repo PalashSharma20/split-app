@@ -24,6 +24,7 @@ class Settings:
     # Frontend URL (used for post-login redirect)
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
+
     # Splitwise
     SPLITWISE_API_KEY: str | None = os.getenv("SPLITWISE_API_KEY")
     SPLITWISE_GROUP_ID: str = os.getenv("SPLITWISE_GROUP_ID", "94331017")

@@ -1,12 +1,16 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from authlib.integrations.starlette_client import OAuth
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.auth import create_session, get_current_user
 from app.database import get_db
 from app.models import User
+
+# Short-lived token used to hand off identity from fly.dev callback → frontend → /auth/finalize
+_finalize_serializer = URLSafeTimedSerializer(settings.SECRET_KEY, salt="finalize-auth")
 
 
 router = APIRouter()
@@ -24,7 +28,7 @@ oauth.register(
 
 @router.get("/login")
 async def login(request: Request):
-    redirect_uri = request.url_for("auth_callback")
+    redirect_uri = str(request.url_for("auth_callback"))
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -41,7 +45,6 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
         print(f"❌ Email {email} not in allowed list")
         raise HTTPException(status_code=403, detail="Unauthorized email")
 
-    # Create or get user from database
     user = db.query(User).filter_by(email=email).first()
     if not user:
         user = User(email=email)
@@ -52,17 +55,35 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
     else:
         print(f"👤 Existing user found: {email}")
 
-    signed_email = create_session(email)
+    # Issue a short-lived one-time token and redirect to the frontend finalize page.
+    # The frontend exchanges this token via the Netlify proxy so the auth_session cookie
+    # ends up on the frontend's domain (fixes iOS Safari ITP cross-site cookie blocking).
+    finalize_token = _finalize_serializer.dumps(email)
+    return RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/finalize?token={finalize_token}")
 
-    response = RedirectResponse(url=f"{settings.FRONTEND_URL}/dashboard")
+
+@router.get("/finalize")
+async def finalize_auth(token: str = Query(...), db: Session = Depends(get_db)):
+    """Exchange a short-lived finalize token for an auth_session cookie."""
+    try:
+        email = _finalize_serializer.loads(token, max_age=120)  # 2-minute window
+    except (SignatureExpired, BadSignature):
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user = db.query(User).filter_by(email=email).first()
+    if not user:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    signed_email = create_session(email)
     is_prod = settings.FRONTEND_URL.startswith("https://")
+    response = JSONResponse({"email": email})
     response.set_cookie(
         key="auth_session",
         value=signed_email,
         httponly=True,
         secure=is_prod,
         samesite="none" if is_prod else "lax",
-        max_age=7 * 24 * 60 * 60,  # 7 days
+        max_age=7 * 24 * 60 * 60,
         path="/",
     )
     return response
