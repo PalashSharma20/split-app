@@ -27,8 +27,11 @@ oauth.register(
 
 
 @router.get("/login")
-async def login(request: Request):
+async def login(request: Request, next: str = Query(default=None)):
     redirect_uri = str(request.url_for("auth_callback"))
+    # Allow localhost override so local dev redirects back to localhost after OAuth
+    if next and next.startswith("http://localhost"):
+        request.session["next_url"] = next
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -59,7 +62,8 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
     # The frontend exchanges this token via the Netlify proxy so the auth_session cookie
     # ends up on the frontend's domain (fixes iOS Safari ITP cross-site cookie blocking).
     finalize_token = _finalize_serializer.dumps(email)
-    return RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/finalize?token={finalize_token}")
+    next_url = request.session.pop("next_url", None) or settings.FRONTEND_URL
+    return RedirectResponse(url=f"{next_url}/auth/finalize?token={finalize_token}")
 
 
 @router.get("/finalize")

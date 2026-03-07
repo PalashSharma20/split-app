@@ -33,5 +33,8 @@ class Settings:
     HISTORY_WINDOW: int = int(os.getenv("HISTORY_WINDOW", "10"))
     DECAY_LAMBDA: float = float(os.getenv("DECAY_LAMBDA", "0.3"))
 
+    # Dev-only: AMEX auto-fetch
+    AMEX_ACCOUNT_KEY: str | None = os.getenv("AMEX_ACCOUNT_KEY")
+
 
 settings = Settings()

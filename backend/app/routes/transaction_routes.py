@@ -24,21 +24,13 @@ _REFERENCE_CANDIDATES = ("Reference", "Reference #", "Ref #", "Ref", "Transactio
 
 
 # ---------------------------------------------------------------------------
-# POST /transactions/upload
+# Shared CSV parsing helper
 # ---------------------------------------------------------------------------
 
-@router.post("/upload", response_model=UploadResult)
-async def upload_csv(
-    file: UploadFile,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    contents = await file.read()
-    try:
-        text = contents.decode("utf-8-sig")  # handle BOM from Excel/AMEX exports
-    except UnicodeDecodeError:
-        text = contents.decode("latin-1")
-
+def _parse_and_insert_csv(
+    text: str, current_user: User, db: Session
+) -> tuple[int, int, list[Transaction]]:
+    """Parse AMEX CSV text, insert new transactions, return (inserted, skipped, new_txs)."""
     reader = csv.DictReader(io.StringIO(text))
     fieldnames = set(reader.fieldnames or [])
 
@@ -60,7 +52,6 @@ async def upload_csv(
     new_transactions: list[Transaction] = []
 
     for row in reader:
-        # Skip credits and payments (negative or zero amounts)
         try:
             amount = float(row["Amount"].strip().replace(",", ""))
         except ValueError:
@@ -68,7 +59,6 @@ async def upload_csv(
         if amount <= 0:
             continue
 
-        # AMEX wraps Reference values in single quotes — strip them
         ref = row[ref_col].strip().strip("'")
         if not ref:
             continue
@@ -110,8 +100,77 @@ async def upload_csv(
         inserted += 1
         new_transactions.append(tx)
 
+    return inserted, skipped, new_transactions
+
+
+# ---------------------------------------------------------------------------
+# POST /transactions/upload
+# ---------------------------------------------------------------------------
+
+@router.post("/upload", response_model=UploadResult)
+async def upload_csv(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    contents = await file.read()
+    try:
+        text = contents.decode("utf-8-sig")  # handle BOM from Excel/AMEX exports
+    except UnicodeDecodeError:
+        text = contents.decode("latin-1")
+
+    inserted, skipped, new_transactions = _parse_and_insert_csv(text, current_user, db)
     results = [_tx_to_out(db, tx, current_user) for tx in new_transactions]
     return UploadResult(inserted=inserted, skipped=skipped, transactions=results)
+
+
+# ---------------------------------------------------------------------------
+# POST /transactions/fetch-amex  (dev only)
+# ---------------------------------------------------------------------------
+
+@router.get("/fetch-amex")
+def fetch_amex(start_date: str = Query(...)):
+    """
+    Dev-only proxy: fetches the AMEX CSV using Chrome cookies and returns raw CSV.
+    The frontend uploads the result to the prod backend — nothing is written locally.
+    """
+    import requests as _requests
+    from datetime import date
+    from fastapi.responses import PlainTextResponse
+
+    if not settings.AMEX_ACCOUNT_KEY:
+        raise HTTPException(status_code=503, detail="AMEX_ACCOUNT_KEY is not set in .env")
+
+    try:
+        import browser_cookie3
+        jar = browser_cookie3.chrome(domain_name=".americanexpress.com")
+        cookies = {c.name: c.value for c in jar}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Could not read Chrome cookies: {e}")
+
+    end_date = date.today().isoformat()
+    url = (
+        "https://global.americanexpress.com/api/servicing/v1/financials/documents"
+        f"?file_format=csv&limit=ALL&start_date={start_date}&end_date={end_date}"
+        f"&additional_fields=true&status=posted"
+        f"&account_key={settings.AMEX_ACCOUNT_KEY}&client_id=AmexAPI"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://global.americanexpress.com/dashboard",
+        "Origin": "https://global.americanexpress.com",
+    }
+
+    try:
+        resp = _requests.get(url, cookies=cookies, headers=headers, timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AMEX request failed: {e}")
+
+    body = resp.text
+    if resp.status_code != 200 or body.lstrip().startswith("<"):
+        raise HTTPException(status_code=401, detail="AMEX session expired — log in at americanexpress.com")
+
+    return PlainTextResponse(content=body, media_type="text/csv")
 
 
 # ---------------------------------------------------------------------------

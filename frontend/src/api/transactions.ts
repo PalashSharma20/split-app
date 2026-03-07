@@ -1,4 +1,4 @@
-import client from './client'
+import client, { localClient } from './client'
 import type { ConfirmRequest, ConfirmResponse, SyncedPage, Transaction, UploadResult } from '../types'
 
 export async function uploadCsv(file: File): Promise<UploadResult> {
@@ -33,4 +33,16 @@ export async function getLastTransactionDate(): Promise<string | null> {
 export async function getSyncedTransactions(offset: number, limit = 25): Promise<SyncedPage> {
   const res = await client.get<SyncedPage>('/transactions/history', { params: { offset, limit } })
   return res.data
+}
+
+export async function fetchFromAmex(startDate: string): Promise<UploadResult> {
+  // Step 1: pull raw CSV from AMEX via the local backend (reads Chrome cookies)
+  const csvRes = await localClient.get<string>('/transactions/fetch-amex', {
+    params: { start_date: startDate },
+    responseType: 'text',
+  })
+
+  // Step 2: upload the CSV to the prod backend so it writes to the real DB
+  const file = new File([csvRes.data], 'amex.csv', { type: 'text/csv' })
+  return uploadCsv(file)
 }
