@@ -35,15 +35,21 @@ class ConfirmRequest(BaseModel):
     @field_validator("percent_you")
     @classmethod
     def validate_percent(cls, v, info):
-        if info.data.get("split_type") == SplitType.percent and v is None:
-            raise ValueError("percent_you is required for split_type=percent")
+        if info.data.get("split_type") == SplitType.percent:
+            if v is None:
+                raise ValueError("percent_you is required for split_type=percent")
+            if not (0 <= v <= 100):
+                raise ValueError("percent_you must be between 0 and 100")
         return v
 
     @field_validator("exact_you")
     @classmethod
     def validate_exact(cls, v, info):
-        if info.data.get("split_type") == SplitType.exact and v is None:
-            raise ValueError("exact_you is required for split_type=exact")
+        if info.data.get("split_type") == SplitType.exact:
+            if v is None:
+                raise ValueError("exact_you is required for split_type=exact")
+            if v < 0:
+                raise ValueError("exact_you cannot be negative")
         return v
 
 

@@ -1,11 +1,13 @@
 from fastapi import Request, HTTPException, Depends
-from itsdangerous import URLSafeSerializer, BadSignature
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from app.config import settings
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User
 
-serializer = URLSafeSerializer(settings.SECRET_KEY, salt="session")
+_SESSION_MAX_AGE = 7 * 24 * 60 * 60  # 7 days, must match cookie max_age
+
+serializer = URLSafeTimedSerializer(settings.SECRET_KEY, salt="session")
 
 
 def create_session(email: str):
@@ -14,8 +16,8 @@ def create_session(email: str):
 
 def verify_session(token: str):
     try:
-        return serializer.loads(token)
-    except BadSignature:
+        return serializer.loads(token, max_age=_SESSION_MAX_AGE)
+    except (BadSignature, SignatureExpired):
         return None
 
 

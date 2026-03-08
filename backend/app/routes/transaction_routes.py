@@ -107,6 +107,9 @@ def _parse_and_insert_csv(
 # POST /transactions/upload
 # ---------------------------------------------------------------------------
 
+_MAX_CSV_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 @router.post("/upload", response_model=UploadResult)
 async def upload_csv(
     file: UploadFile,
@@ -114,6 +117,8 @@ async def upload_csv(
     current_user: User = Depends(get_current_user),
 ):
     contents = await file.read()
+    if len(contents) > _MAX_CSV_SIZE:
+        raise HTTPException(status_code=413, detail="CSV file exceeds 10 MB limit")
     try:
         text = contents.decode("utf-8-sig")  # handle BOM from Excel/AMEX exports
     except UnicodeDecodeError:
@@ -137,6 +142,11 @@ def fetch_amex(start_date: str = Query(...)):
     import requests as _requests
     from datetime import date
     from fastapi.responses import PlainTextResponse
+
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date must be YYYY-MM-DD format")
 
     if not settings.AMEX_ACCOUNT_KEY:
         raise HTTPException(status_code=503, detail="AMEX_ACCOUNT_KEY is not set in .env")
@@ -361,9 +371,12 @@ def confirm_transaction(
 @router.post("/import-historical", response_model=ImportResult)
 async def import_historical(
     file: UploadFile,
+    confirm: str = Query(default=""),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if confirm != "wipe":
+        raise HTTPException(status_code=400, detail="Pass ?confirm=wipe to confirm deleting all data")
     """
     Wipe all transactions and split_history, then bulk-import from an enriched CSV
     produced by scripts/match_amex_to_splitwise.py.

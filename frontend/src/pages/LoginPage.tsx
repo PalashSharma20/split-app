@@ -21,7 +21,7 @@ export default function LoginPage() {
         </p>
         <Button
           intent="primary"
-          large
+          size="large"
           fill
           icon="log-in"
           onClick={() => {

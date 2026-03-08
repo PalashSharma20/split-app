@@ -138,19 +138,21 @@ Defined in `backend/app/utils/normalization.py → amount_to_bucket()`. Stored i
 ## API Endpoints
 
 ### Auth (`/auth`)
-- `GET /auth/login` — Redirect to Google OAuth
-- `GET /auth/callback` — OAuth callback; sets session cookie
-- `GET /auth/logout` — Clear session
+- `GET /auth/login` — Redirect to Google OAuth (accepts `?next=` for localhost redirect)
+- `GET /auth/callback` — OAuth callback; redirects to `/finalize?token=...`
+- `GET /auth/finalize` — Exchange short-lived token for `auth_session` cookie
+- `POST /auth/logout` — Clear session cookie
 - `GET /auth/me` — Returns current user or 401
 
 ### Transactions (`/transactions`)
-- `POST /transactions/upload` — Upload AMEX CSV; returns unsynced transactions with suggestions
+- `POST /transactions/upload` — Upload AMEX CSV; returns unsynced transactions with suggestions (10 MB limit)
 - `GET /transactions/` — List unsynced transactions with split suggestions
 - `GET /transactions/history` — Synced transactions (paginated, 25/page)
 - `GET /transactions/last-date` — Date of most recent transaction
 - `POST /transactions/{id}/confirm` — Confirm split, push to Splitwise, record history
-- `POST /transactions/import-historical` — Wipe all data and bulk-import from enriched CSV (see below)
+- `POST /transactions/import-historical?confirm=wipe` — Wipe all data and bulk-import from enriched CSV (see below)
 - `DELETE /transactions/pending` — Delete all unsynced transactions
+- `GET /transactions/fetch-amex?start_date=YYYY-MM-DD` — (dev-only) Fetch AMEX CSV via Chrome cookies, returns raw CSV
 
 ---
 
@@ -177,10 +179,31 @@ DECAY_LAMBDA=0.3        # optional, default 0.3
 
 ### Frontend
 ```
-VITE_API_BASE_URL=https://split-app-api.fly.dev  # set in .env.production
+VITE_API_BASE_URL=           # empty — all API calls use relative paths, proxied to fly.dev
+VITE_API_DIRECT_URL=https://split-app-api.fly.dev  # used only for full-page OAuth redirect
 ```
 
-During dev, Vite proxies `/auth` and `/transactions` to `http://localhost:8000`.
+### Dev-only (backend `.env`)
+```
+AMEX_ACCOUNT_KEY=            # AMEX account key for local CSV fetch
+DEV_AUTO_LOGIN_EMAIL=        # (optional) skip Google OAuth for local dev
+```
+
+---
+
+## Proxy Architecture
+
+All API calls (`/auth/*`, `/transactions/*`) are proxied through the same origin as the
+frontend so that auth cookies are first-party (avoids cross-site cookie blocks).
+
+| Environment | Proxy | Config |
+|-------------|-------|--------|
+| Dev (Vite) | `/auth`, `/transactions` → `https://split-app-api.fly.dev` | `vite.config.ts` |
+| Dev (Vite) | `/api` → `http://localhost:8000` (local-only endpoints) | `vite.config.ts` |
+| Prod (Netlify) | `/auth/*`, `/transactions/*` → `https://split-app-api.fly.dev` | `netlify.toml` |
+
+The OAuth login redirect (`window.location.href`) goes directly to fly.dev via
+`VITE_API_DIRECT_URL` because OAuth callbacks must hit fly.dev's real hostname.
 
 ---
 
@@ -259,6 +282,13 @@ AMEX CSV includes an "Account #" field (e.g., `-XXXXX`). The backend maps this t
 ## Local Dev
 
 ```bash
+# Single command (starts backend + frontend, opens browser)
+./dev.sh           # fetch-only mode: only /transactions/fetch-amex exposed locally
+./dev.sh --full    # full mode: all backend routes exposed for code testing
+```
+
+Or manually:
+```bash
 # Backend
 cd backend
 python -m venv .venv && source .venv/bin/activate
@@ -271,3 +301,16 @@ cd frontend
 npm install
 npm run dev
 ```
+
+### AMEX Auto-Fetch (dev only)
+
+The "Fetch from AMEX" button on the dashboard (dev mode only):
+1. Calls local backend `GET /transactions/fetch-amex` which reads Chrome's AMEX cookies via `browser_cookie3`
+2. Returns raw CSV text
+3. Frontend uploads CSV to prod backend's `POST /transactions/upload`
+4. If AMEX session expired (401), shows callout to log in at americanexpress.com and retry
+
+### FETCH_ONLY Mode
+
+When `FETCH_ONLY=true` (default in `dev.sh`), a middleware blocks all local backend routes
+except `/transactions/fetch-amex`. Pass `--full` to `dev.sh` to disable this and test all routes locally.

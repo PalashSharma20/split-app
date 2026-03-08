@@ -5,10 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/backend"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
 
+# --full disables fetch-only mode so all backend routes are available for testing
+if [[ "$1" == "--full" ]]; then
+    unset FETCH_ONLY
+    echo "==> Full mode: all backend routes enabled"
+else
+    export FETCH_ONLY=true
+fi
+
 # Activate the backend venv
 source "$BACKEND_DIR/.venv/bin/activate"
 
-# Start local backend (only handles fetch-amex — everything else goes to fly.dev)
+# Start local backend (fetch-amex + dev-login only, unless --full)
 echo "==> Starting local backend..."
 cd "$BACKEND_DIR"
 uvicorn app.main:app --reload &

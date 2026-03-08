@@ -21,7 +21,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
-          <Route path="/auth/finalize" element={<AuthFinalizePage />} />
+          <Route path="/finalize" element={<AuthFinalizePage />} />
           <Route path="/dashboard" element={<ProtectedShell><DashboardPage /></ProtectedShell>} />
           <Route path="/review" element={<ProtectedShell><ReviewPage /></ProtectedShell>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
