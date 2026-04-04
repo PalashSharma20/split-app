@@ -7,10 +7,10 @@ from datetime import datetime
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import SplitHistory, SplitType, Transaction, User
-from app.schemas import ConfirmRequest, ConfirmResponse, ImportResult, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
+from app.models import BalanceCheckpoint, SplitHistory, SplitType, Transaction, User
+from app.schemas import BalanceResult, CheckpointRequest, CheckpointResponse, ConfirmRequest, ConfirmResponse, ImportResult, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
 from app.utils.calculations import calculate_split
-from app.utils.normalization import amount_to_bucket, parse_description
+from app.utils.normalization import amount_to_bucket, is_payment_transaction, parse_description
 from app.utils.splitwise import create_expense
 from app.utils.suggestion import suggest_split
 
@@ -56,7 +56,11 @@ def _parse_and_insert_csv(
             amount = float(row["Amount"].strip().replace(",", ""))
         except ValueError:
             continue
-        if amount <= 0:
+        # Skip zero-value rows and card payment transactions.
+        # Negative amounts (refunds/credits) are allowed through.
+        if amount == 0:
+            continue
+        if amount < 0 and is_payment_transaction(row["Description"]):
             continue
 
         ref = row[ref_col].strip().strip("'")
@@ -320,13 +324,18 @@ def confirm_transaction(
         exact_you=body.exact_you,
     )
 
-    # Determine who actually paid based on which account the charge appeared on.
-    # Falls back to current_user if account_number isn't matched to anyone.
+    # Determine who actually paid (or received the refund) based on account_number.
     payer, non_payer = _resolve_payer(tx, current_user, other_user)
 
-    # From the payer's perspective: payer_owed is their share, other_owed is non-payer's share.
-    # If payer == current_user, you_owed / other_owed map directly.
-    # If payer == other_user, the roles are flipped.
+    # For refunds (negative amounts), Splitwise doesn't accept negative costs.
+    # We flip the payer/non-payer roles and use absolute values: the credit recipient
+    # now "owes" the other person their share, expressed as a positive expense.
+    if total < 0:
+        payer, non_payer = non_payer, payer
+        total = abs(total)
+        you_owed, other_owed = abs(you_owed), abs(other_owed)
+
+    # Map payer/non-payer shares from the current_user's perspective.
     if payer.id == current_user.id:
         payer_owed, non_payer_owed = you_owed, other_owed
     else:
@@ -426,13 +435,17 @@ async def import_historical(
     seen_refs: set[str] = set()  # deduplicate within the CSV itself
 
     for row in rows:
-        # Parse amount — skip credits/payments
+        # Parse amount — skip zero-value rows and card payment transactions.
+        # Negative amounts (refunds/credits) are allowed through.
         try:
             amount = float(row["Amount"].strip().replace(",", ""))
         except (ValueError, KeyError):
             skipped += 1
             continue
-        if amount <= 0:
+        if amount == 0:
+            skipped += 1
+            continue
+        if amount < 0 and is_payment_transaction(row.get("Description", "")):
             skipped += 1
             continue
 
@@ -510,6 +523,103 @@ async def import_historical(
 
     db.commit()
     return ImportResult(inserted=inserted, rules_created=rules_created, skipped=skipped)
+
+
+# ---------------------------------------------------------------------------
+# GET  /transactions/balance      — net balance since last checkpoint
+# POST /transactions/balance/checkpoint  — save a new settled-up checkpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/balance", response_model=BalanceResult)
+def get_balance(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Sum each person's synced transactions by which card they appeared on,
+    since the most recent checkpoint. This shows how much each person owes AMEX.
+    """
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    if other_user is None:
+        raise HTTPException(status_code=500, detail="Could not find the second user")
+
+    last_cp = (
+        db.query(BalanceCheckpoint)
+        .order_by(BalanceCheckpoint.created_at.desc())
+        .first()
+    )
+    from_date = last_cp.checkpoint_date if last_cp else None
+
+    txs_q = db.query(Transaction).filter(Transaction.synced == True)
+    if from_date:
+        txs_q = txs_q.filter(Transaction.date > from_date)
+    txs = txs_q.all()
+
+    your_total = 0.0
+    other_total = 0.0
+
+    for tx in txs:
+        amount = float(tx.amount)
+        payer, _ = _resolve_payer(tx, current_user, other_user)
+        if payer.id == current_user.id:
+            your_total += amount
+        else:
+            other_total += amount
+
+    through_date = max(tx.date for tx in txs) if txs else None
+
+    return BalanceResult(
+        your_amex_total=round(your_total, 2),
+        other_amex_total=round(other_total, 2),
+        from_date=from_date,
+        through_date=through_date,
+        your_name=current_user.email.split("@")[0],
+        other_name=other_user.email.split("@")[0],
+        last_checkpoint_at=last_cp.created_at if last_cp else None,
+    )
+
+
+@router.post("/balance/checkpoint/latest", response_model=CheckpointResponse, status_code=201)
+def set_checkpoint_to_latest(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """One-time bootstrap: set checkpoint to the most recent synced transaction date.
+    Fails if a checkpoint already exists."""
+    from sqlalchemy import func
+    existing = db.query(BalanceCheckpoint).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="A checkpoint already exists — use the normal checkpoint endpoint")
+    latest_date = db.query(func.max(Transaction.date)).filter(Transaction.synced == True).scalar()
+    if latest_date is None:
+        raise HTTPException(status_code=404, detail="No synced transactions found")
+    cp = BalanceCheckpoint(checkpoint_date=latest_date, label="Bootstrapped from latest transaction")
+    db.add(cp)
+    db.commit()
+    db.refresh(cp)
+    return CheckpointResponse(id=cp.id, checkpoint_date=cp.checkpoint_date, created_at=cp.created_at, label=cp.label)
+
+
+@router.post("/balance/checkpoint", response_model=CheckpointResponse, status_code=201)
+def set_balance_checkpoint(
+    body: CheckpointRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Save a checkpoint date to mark that balances have been settled through this date."""
+    cp = BalanceCheckpoint(
+        checkpoint_date=body.checkpoint_date,
+        label=body.label,
+    )
+    db.add(cp)
+    db.commit()
+    db.refresh(cp)
+    return CheckpointResponse(
+        id=cp.id,
+        checkpoint_date=cp.checkpoint_date,
+        created_at=cp.created_at,
+        label=cp.label,
+    )
 
 
 # ---------------------------------------------------------------------------

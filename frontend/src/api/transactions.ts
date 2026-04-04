@@ -1,5 +1,5 @@
 import client, { localClient } from './client'
-import type { ConfirmRequest, ConfirmResponse, SyncedPage, Transaction, UploadResult } from '../types'
+import type { BalanceResult, CheckpointRequest, ConfirmRequest, ConfirmResponse, SyncedPage, Transaction, UploadResult } from '../types'
 
 export async function uploadCsv(file: File): Promise<UploadResult> {
   const form = new FormData()
@@ -33,6 +33,15 @@ export async function getLastTransactionDate(): Promise<string | null> {
 export async function getSyncedTransactions(offset: number, limit = 25): Promise<SyncedPage> {
   const res = await client.get<SyncedPage>('/transactions/history', { params: { offset, limit } })
   return res.data
+}
+
+export async function getBalance(): Promise<BalanceResult> {
+  const res = await client.get<BalanceResult>('/transactions/balance')
+  return res.data
+}
+
+export async function setBalanceCheckpoint(body: CheckpointRequest): Promise<void> {
+  await client.post('/transactions/balance/checkpoint', body)
 }
 
 export async function fetchFromAmex(startDate: string): Promise<UploadResult> {

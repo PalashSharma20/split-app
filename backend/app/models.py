@@ -5,6 +5,7 @@ from app.database import Base
 import enum
 
 
+
 class SplitType(str, enum.Enum):
     equal = "equal"
     full_you = "full_you"
@@ -75,3 +76,17 @@ class SplitHistory(Base):
         Index("ix_split_history_merchant_sub", "merchant_key", "sub_merchant_key"),
         Index("ix_split_history_created_at", "created_at"),
     )
+
+
+class BalanceCheckpoint(Base):
+    """
+    Marks the point in time through which balances have been settled.
+    The balance endpoint only counts synced transactions dated after the
+    most recent checkpoint_date.
+    """
+    __tablename__ = "balance_checkpoints"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    checkpoint_date = Column(Date, nullable=False)
+    label = Column(String, nullable=True)

@@ -85,6 +85,7 @@ def _clean(text: str) -> str:
 
 def amount_to_bucket(amount: float) -> str:
     """Categorize a transaction amount into a size bucket for split suggestions."""
+    amount = abs(amount)
     if amount < 20:
         return "xs"
     if amount < 75:
@@ -92,6 +93,21 @@ def amount_to_bucket(amount: float) -> str:
     if amount < 250:
         return "md"
     return "lg"
+
+
+# Descriptions that indicate a card payment/autopay — not a real expense to split.
+_PAYMENT_PATTERNS = (
+    "online payment",
+    "autopay payment",
+    "payment - thank you",
+    "payment thank you",
+)
+
+
+def is_payment_transaction(description: str) -> bool:
+    """Return True if this row is an AMEX payment/autopay, not a real expense."""
+    lower = description.lower()
+    return any(pat in lower for pat in _PAYMENT_PATTERNS)
 
 
 # Kept for backward compatibility

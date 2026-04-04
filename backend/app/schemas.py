@@ -1,6 +1,6 @@
 from pydantic import BaseModel, field_validator
 from typing import Optional
-from datetime import date as DateType
+from datetime import date as DateType, datetime as DatetimeType
 from app.models import SplitType
 
 
@@ -89,3 +89,29 @@ class ImportResult(BaseModel):
     inserted: int
     rules_created: int
     skipped: int
+
+
+class BalanceResult(BaseModel):
+    """
+    How much each person owes AMEX since the last checkpoint,
+    based on which card each transaction appeared on.
+    """
+    your_amex_total: float
+    other_amex_total: float
+    from_date: Optional[DateType]
+    through_date: Optional[DateType]
+    your_name: str
+    other_name: str
+    last_checkpoint_at: Optional[DatetimeType]
+
+
+class CheckpointRequest(BaseModel):
+    checkpoint_date: DateType
+    label: Optional[str] = None
+
+
+class CheckpointResponse(BaseModel):
+    id: int
+    checkpoint_date: DateType
+    created_at: DatetimeType
+    label: Optional[str]

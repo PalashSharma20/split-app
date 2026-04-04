@@ -1,15 +1,17 @@
-import { Button, Callout, Card, H4, Spinner, Tag } from "@blueprintjs/core"
+import { Button, Callout, Card, Dialog, DialogBody, DialogFooter, H4, Spinner, Tag } from "@blueprintjs/core"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   fetchFromAmex,
+  getBalance,
   getLastTransactionDate,
   getSyncedTransactions,
   listUnsynced,
+  setBalanceCheckpoint,
   uploadCsv,
 } from "../api/transactions"
 import { fmt } from "../utils/calculations"
-import type { SyncedTransaction, SplitType, UploadResult } from "../types"
+import type { BalanceResult, SyncedTransaction, SplitType, UploadResult } from "../types"
 
 const SPLIT_LABELS: Record<SplitType, string> = {
   equal: "50 / 50",
@@ -56,7 +58,20 @@ export default function DashboardPage() {
   const [historyTotal, setHistoryTotal] = useState(0)
   const [historyLoading, setHistoryLoading] = useState(false)
 
+  const [balance, setBalance] = useState<BalanceResult | null>(null)
+  const [balanceLoading, setBalanceLoading] = useState(true)
+  const [settleDialogOpen, setSettleDialogOpen] = useState(false)
+  const [settlingUp, setSettlingUp] = useState(false)
+
   const totalPages = Math.ceil(historyTotal / PAGE_SIZE)
+
+  function loadBalance() {
+    setBalanceLoading(true)
+    getBalance()
+      .then(setBalance)
+      .catch(console.error)
+      .finally(() => setBalanceLoading(false))
+  }
 
   useEffect(() => {
     listUnsynced()
@@ -65,6 +80,7 @@ export default function DashboardPage() {
     getLastTransactionDate()
       .then(setLastDate)
       .catch(() => setLastDate(null))
+    loadBalance()
   }, [])
 
   useEffect(() => {
@@ -134,6 +150,20 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleSettleUp() {
+    setSettlingUp(true)
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      await setBalanceCheckpoint({ checkpoint_date: today, label: "Settled up" })
+      setSettleDialogOpen(false)
+      loadBalance()
+    } catch {
+      // ignore; dialog stays open
+    } finally {
+      setSettlingUp(false)
+    }
+  }
+
   return (
     <div>
       {/* Pending banner */}
@@ -182,6 +212,79 @@ export default function DashboardPage() {
           <span className="stat-label">Last imported date</span>
         </div>
       </div>
+
+      {/* Balance */}
+      <Card style={{ marginBottom: 20, padding: "16px 20px" }}>
+        <H4 style={{ margin: "0 0 12px" }}>AMEX Balance</H4>
+
+        {balanceLoading ? (
+          <Spinner size={20} />
+        ) : balance && (() => {
+          const yourTotal = parseFloat(String(balance.your_amex_total)) || 0
+          const otherTotal = parseFloat(String(balance.other_amex_total)) || 0
+          const since = balance.last_checkpoint_at
+            ? `Since ${new Date(balance.last_checkpoint_at).toLocaleDateString()}`
+            : "All time"
+          const through = balance.through_date ? ` · through ${balance.through_date}` : ""
+          return (
+            <div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+                {[
+                  { name: balance.your_name, total: yourTotal },
+                  { name: balance.other_name, total: otherTotal },
+                ].map(({ name, total }) => (
+                  <div
+                    key={name}
+                    style={{
+                      flex: "1 1 140px",
+                      padding: "12px 16px",
+                      borderRadius: 8,
+                      background: "#f5f8fa",
+                      border: "1px solid #e1e8ed",
+                    }}>
+                    <div style={{ fontSize: 12, color: "#738091", marginBottom: 4, textTransform: "capitalize" }}>
+                      {name}
+                    </div>
+                    <div style={{ fontWeight: 700, fontSize: 22 }}>{fmt(total)}</div>
+                    <div style={{ fontSize: 11, color: "#a0aab4", marginTop: 2 }}>owes AMEX</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "#a0aab4" }}>{since}{through}</span>
+                {(yourTotal !== 0 || otherTotal !== 0) && (
+                  <Button intent="success" icon="tick-circle" small onClick={() => setSettleDialogOpen(true)}>
+                    Settle up
+                  </Button>
+                )}
+              </div>
+            </div>
+          )
+        })()}
+      </Card>
+
+      <Dialog
+        isOpen={settleDialogOpen}
+        onClose={() => setSettleDialogOpen(false)}
+        title="Mark as Settled"
+        style={{ width: 380 }}>
+        <DialogBody>
+          <p style={{ margin: 0 }}>
+            This will save today as a checkpoint. Future balance computations will only include
+            transactions after today.
+          </p>
+        </DialogBody>
+        <DialogFooter
+          actions={
+            <>
+              <Button onClick={() => setSettleDialogOpen(false)}>Cancel</Button>
+              <Button intent="success" loading={settlingUp} onClick={handleSettleUp}>
+                Confirm
+              </Button>
+            </>
+          }
+        />
+      </Dialog>
 
       {/* Upload */}
       <Card className="upload-card">

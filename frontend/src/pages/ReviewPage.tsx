@@ -306,10 +306,10 @@ function MobileCard({ row, dispatch }: { row: RowState; dispatch: React.Dispatch
         <div style={{ fontSize: 13 }}>
           {isPersonal ? (
             <span style={{ color: '#738091' }}>—</span>
-          ) : tx.you_paid ? (
-            <span className="owed-other">↑ {fmt(otherOwed)} owed to you</span>
+          ) : (parseFloat(tx.amount) < 0 ? !tx.you_paid : tx.you_paid) ? (
+            <span className="owed-other">↑ {fmt(Math.abs(otherOwed))} owed to you</span>
           ) : (
-            <span className="owed-you">↓ {fmt(youOwed)} you owe</span>
+            <span className="owed-you">↓ {fmt(Math.abs(youOwed))} you owe</span>
           )}
         </div>
         <div>
@@ -404,12 +404,12 @@ function SplitRow({ row, dispatch }: { row: RowState; dispatch: React.Dispatch<A
       <td style={{ whiteSpace: 'nowrap' }}>
         {isPersonal ? (
           <span style={{ color: '#738091', fontSize: 13 }}>—</span>
-        ) : tx.you_paid ? (
-          // You paid → they owe you
-          <span className="owed-other">↑ {fmt(otherOwed)} owed to you</span>
+        ) : (parseFloat(tx.amount) < 0 ? !tx.you_paid : tx.you_paid) ? (
+          // You received the refund (or you paid the charge) → they owe you
+          <span className="owed-other">↑ {fmt(Math.abs(otherOwed))} owed to you</span>
         ) : (
-          // They paid → you owe them
-          <span className="owed-you">↓ {fmt(youOwed)} you owe</span>
+          // They received the refund (or they paid the charge) → you owe them
+          <span className="owed-you">↓ {fmt(Math.abs(youOwed))} you owe</span>
         )}
       </td>
 
