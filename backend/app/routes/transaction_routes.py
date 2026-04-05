@@ -548,11 +548,13 @@ def get_balance(
         .order_by(BalanceCheckpoint.created_at.desc())
         .first()
     )
-    from_date = last_cp.checkpoint_date if last_cp else None
-
     txs_q = db.query(Transaction).filter(Transaction.synced == True)
-    if from_date:
-        txs_q = txs_q.filter(Transaction.date > from_date)
+    if last_cp:
+        if last_cp.checkpoint_transaction_id is not None:
+            txs_q = txs_q.filter(Transaction.id > last_cp.checkpoint_transaction_id)
+        else:
+            # Legacy date-based fallback for checkpoints created before migration 0008
+            txs_q = txs_q.filter(Transaction.date > last_cp.checkpoint_date)
     txs = txs_q.all()
 
     your_total = 0.0
@@ -571,33 +573,13 @@ def get_balance(
     return BalanceResult(
         your_amex_total=round(your_total, 2),
         other_amex_total=round(other_total, 2),
-        from_date=from_date,
+        from_date=last_cp.checkpoint_date if last_cp else None,
         through_date=through_date,
         your_name=current_user.email.split("@")[0],
         other_name=other_user.email.split("@")[0],
         last_checkpoint_at=last_cp.created_at if last_cp else None,
     )
 
-
-@router.post("/balance/checkpoint/latest", response_model=CheckpointResponse, status_code=201)
-def set_checkpoint_to_latest(
-    db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    """One-time bootstrap: set checkpoint to the most recent synced transaction date.
-    Fails if a checkpoint already exists."""
-    from sqlalchemy import func
-    existing = db.query(BalanceCheckpoint).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="A checkpoint already exists — use the normal checkpoint endpoint")
-    latest_date = db.query(func.max(Transaction.date)).filter(Transaction.synced == True).scalar()
-    if latest_date is None:
-        raise HTTPException(status_code=404, detail="No synced transactions found")
-    cp = BalanceCheckpoint(checkpoint_date=latest_date, label="Bootstrapped from latest transaction")
-    db.add(cp)
-    db.commit()
-    db.refresh(cp)
-    return CheckpointResponse(id=cp.id, checkpoint_date=cp.checkpoint_date, created_at=cp.created_at, label=cp.label)
 
 
 @router.post("/balance/checkpoint", response_model=CheckpointResponse, status_code=201)
@@ -606,9 +588,12 @@ def set_balance_checkpoint(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Save a checkpoint date to mark that balances have been settled through this date."""
+    """Save a checkpoint marking that balances have been settled through now."""
+    from sqlalchemy import func
+    latest_id = db.query(func.max(Transaction.id)).filter(Transaction.synced == True).scalar()
     cp = BalanceCheckpoint(
         checkpoint_date=body.checkpoint_date,
+        checkpoint_transaction_id=latest_id,
         label=body.label,
     )
     db.add(cp)

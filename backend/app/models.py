@@ -88,5 +88,6 @@ class BalanceCheckpoint(Base):
 
     id = Column(Integer, primary_key=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    checkpoint_date = Column(Date, nullable=False)
+    checkpoint_date = Column(Date, nullable=False)          # display only
+    checkpoint_transaction_id = Column(Integer, nullable=True)  # cutoff: balance includes id > this
     label = Column(String, nullable=True)
