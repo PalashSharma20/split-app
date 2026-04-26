@@ -100,5 +100,3 @@ class BalanceResult(BaseModel):
     other_amex_total: float
     your_name: str
     other_name: str
-
-

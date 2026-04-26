@@ -532,8 +532,7 @@ async def import_historical(
 
 
 # ---------------------------------------------------------------------------
-# GET  /transactions/balance      — net balance since last checkpoint
-# POST /transactions/balance/checkpoint  — save a new settled-up checkpoint
+# GET /transactions/balance
 # ---------------------------------------------------------------------------
 
 @router.get("/balance", response_model=BalanceResult)
@@ -563,9 +562,6 @@ def get_balance(
         your_name=current_user.email.split("@")[0],
         other_name=other_user.email.split("@")[0],
     )
-
-
-
 
 
 # ---------------------------------------------------------------------------
