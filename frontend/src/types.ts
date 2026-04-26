@@ -71,17 +71,10 @@ export interface User {
 export interface BalanceResult {
   your_amex_total: number
   other_amex_total: number
-  from_date: string | null
-  through_date: string | null
   your_name: string
   other_name: string
-  last_checkpoint_at: string | null
 }
 
-export interface CheckpointRequest {
-  checkpoint_date: string
-  label?: string | null
-}
 
 export interface RowState {
   tx: Transaction

@@ -78,16 +78,3 @@ class SplitHistory(Base):
     )
 
 
-class BalanceCheckpoint(Base):
-    """
-    Marks the point in time through which balances have been settled.
-    The balance endpoint only counts synced transactions dated after the
-    most recent checkpoint_date.
-    """
-    __tablename__ = "balance_checkpoints"
-
-    id = Column(Integer, primary_key=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    checkpoint_date = Column(Date, nullable=False)          # display only
-    checkpoint_transaction_id = Column(Integer, nullable=True)  # cutoff: balance includes id > this
-    label = Column(String, nullable=True)

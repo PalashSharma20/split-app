@@ -1,5 +1,5 @@
 import client, { localClient } from './client'
-import type { BalanceResult, CheckpointRequest, ConfirmRequest, ConfirmResponse, SyncedPage, Transaction, UploadResult } from '../types'
+import type { BalanceResult, ConfirmRequest, ConfirmResponse, SyncedPage, Transaction, UploadResult } from '../types'
 
 export async function uploadCsv(file: File): Promise<UploadResult> {
   const form = new FormData()
@@ -40,9 +40,6 @@ export async function getBalance(): Promise<BalanceResult> {
   return res.data
 }
 
-export async function setBalanceCheckpoint(body: CheckpointRequest): Promise<void> {
-  await client.post('/transactions/balance/checkpoint', body)
-}
 
 export async function fetchFromAmex(startDate: string): Promise<UploadResult> {
   // Step 1: pull raw CSV from AMEX via the local backend (reads Chrome cookies)

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 import csv
 import io
@@ -7,8 +8,8 @@ from datetime import datetime
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import BalanceCheckpoint, SplitHistory, SplitType, Transaction, User
-from app.schemas import BalanceResult, CheckpointRequest, CheckpointResponse, ConfirmRequest, ConfirmResponse, ImportResult, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
+from app.models import SplitHistory, SplitType, Transaction, User
+from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, ImportResult, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
 from app.utils.calculations import calculate_split
 from app.utils.normalization import amount_to_bucket, is_payment_transaction, parse_description
 from app.utils.splitwise import create_expense
@@ -56,11 +57,7 @@ def _parse_and_insert_csv(
             amount = float(row["Amount"].strip().replace(",", ""))
         except ValueError:
             continue
-        # Skip zero-value rows and card payment transactions.
-        # Negative amounts (refunds/credits) are allowed through.
         if amount == 0:
-            continue
-        if amount < 0 and is_payment_transaction(row["Description"]):
             continue
 
         ref = row[ref_col].strip().strip("'")
@@ -83,6 +80,8 @@ def _parse_and_insert_csv(
                 detail=f"Unrecognised date format: {row['Date']!r} (expected MM/DD/YYYY)",
             )
 
+        is_payment = is_payment_transaction(row["Description"])
+
         tx = Transaction(
             amex_reference=ref,
             date=tx_date,
@@ -95,14 +94,26 @@ def _parse_and_insert_csv(
             card_member=row.get("Card Member", "").strip() or None,
             account_number=row.get("Account #", "").strip() or None,
             uploaded_by=current_user.id,
-            synced=False,
+            synced=is_payment,  # auto-confirm payments, queue everything else
         )
         db.add(tx)
+        db.flush()
+
+        if is_payment:
+            db.add(SplitHistory(
+                transaction_id=tx.id,
+                merchant_key=tx.merchant_key,
+                sub_merchant_key=tx.sub_merchant_key,
+                split_type=SplitType.personal,
+                amount_bucket=amount_to_bucket(float(tx.amount)),
+            ))
+
         db.commit()
         db.refresh(tx)
 
         inserted += 1
-        new_transactions.append(tx)
+        if not is_payment:
+            new_transactions.append(tx)
 
     return inserted, skipped, new_transactions
 
@@ -435,17 +446,12 @@ async def import_historical(
     seen_refs: set[str] = set()  # deduplicate within the CSV itself
 
     for row in rows:
-        # Parse amount — skip zero-value rows and card payment transactions.
-        # Negative amounts (refunds/credits) are allowed through.
         try:
             amount = float(row["Amount"].strip().replace(",", ""))
         except (ValueError, KeyError):
             skipped += 1
             continue
         if amount == 0:
-            skipped += 1
-            continue
-        if amount < 0 and is_payment_transaction(row.get("Description", "")):
             skipped += 1
             continue
 
@@ -536,75 +542,30 @@ def get_balance(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Sum each person's synced transactions by which card they appeared on,
-    since the most recent checkpoint. This shows how much each person owes AMEX.
+    Sum each person's synced transactions by which card they appeared on (all-time).
+    Uses a SQL aggregate so performance stays constant regardless of row count.
     """
     other_user = db.query(User).filter(User.id != current_user.id).first()
     if other_user is None:
         raise HTTPException(status_code=500, detail="Could not find the second user")
 
-    last_cp = (
-        db.query(BalanceCheckpoint)
-        .order_by(BalanceCheckpoint.created_at.desc())
-        .first()
-    )
-    txs_q = db.query(Transaction).filter(Transaction.synced == True)
-    if last_cp:
-        if last_cp.checkpoint_transaction_id is not None:
-            txs_q = txs_q.filter(Transaction.id > last_cp.checkpoint_transaction_id)
-        else:
-            # Legacy date-based fallback for checkpoints created before migration 0008
-            txs_q = txs_q.filter(Transaction.date > last_cp.checkpoint_date)
-    txs = txs_q.all()
+    your_account = current_user.amex_account_number
+    other_account = other_user.amex_account_number
 
-    your_total = 0.0
-    other_total = 0.0
-
-    for tx in txs:
-        amount = float(tx.amount)
-        payer, _ = _resolve_payer(tx, current_user, other_user)
-        if payer.id == current_user.id:
-            your_total += amount
-        else:
-            other_total += amount
-
-    through_date = max(tx.date for tx in txs) if txs else None
+    row = db.query(
+        func.sum(case((Transaction.account_number == your_account, Transaction.amount), else_=0)).label("your_total"),
+        func.sum(case((Transaction.account_number == other_account, Transaction.amount), else_=0)).label("other_total"),
+    ).filter(Transaction.synced == True).one()
 
     return BalanceResult(
-        your_amex_total=round(your_total, 2),
-        other_amex_total=round(other_total, 2),
-        from_date=last_cp.checkpoint_date if last_cp else None,
-        through_date=through_date,
+        your_amex_total=round(float(row.your_total or 0), 2),
+        other_amex_total=round(float(row.other_total or 0), 2),
         your_name=current_user.email.split("@")[0],
         other_name=other_user.email.split("@")[0],
-        last_checkpoint_at=last_cp.created_at if last_cp else None,
     )
 
 
 
-@router.post("/balance/checkpoint", response_model=CheckpointResponse, status_code=201)
-def set_balance_checkpoint(
-    body: CheckpointRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    """Save a checkpoint marking that balances have been settled through now."""
-    from sqlalchemy import func
-    latest_id = db.query(func.max(Transaction.id)).filter(Transaction.synced == True).scalar()
-    cp = BalanceCheckpoint(
-        checkpoint_date=body.checkpoint_date,
-        checkpoint_transaction_id=latest_id,
-        label=body.label,
-    )
-    db.add(cp)
-    db.commit()
-    db.refresh(cp)
-    return CheckpointResponse(
-        id=cp.id,
-        checkpoint_date=cp.checkpoint_date,
-        created_at=cp.created_at,
-        label=cp.label,
-    )
 
 
 # ---------------------------------------------------------------------------
