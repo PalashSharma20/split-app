@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1f3a"/>
+      <stop offset="100%" style="stop-color:#0d1520"/>
+    </linearGradient>
+    <linearGradient id="leftGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00e5c8"/>
+      <stop offset="100%" style="stop-color:#00b8a0"/>
+    </linearGradient>
+    <linearGradient id="rightGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6c63ff"/>
+      <stop offset="100%" style="stop-color:#4a44cc"/>
+    </linearGradient>
+    <linearGradient id="dividerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0.2"/>
+    </linearGradient>
+    <clipPath id="leftClip">
+      <polygon points="80,80 292,80 232,432 80,432"/>
+    </clipPath>
+    <clipPath id="rightClip">
+      <polygon points="220,80 432,80 432,432 280,432"/>
+    </clipPath>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="512" height="512" rx="110" ry="110" fill="url(#bgGrad)"/>
+
+  <!-- Subtle grid texture -->
+  <g opacity="0.04">
+    <line x1="128" y1="0" x2="128" y2="512" stroke="white" stroke-width="1"/>
+    <line x1="256" y1="0" x2="256" y2="512" stroke="white" stroke-width="1"/>
+    <line x1="384" y1="0" x2="384" y2="512" stroke="white" stroke-width="1"/>
+    <line x1="0" y1="128" x2="512" y2="128" stroke="white" stroke-width="1"/>
+    <line x1="0" y1="256" x2="512" y2="256" stroke="white" stroke-width="1"/>
+    <line x1="0" y1="384" x2="512" y2="384" stroke="white" stroke-width="1"/>
+  </g>
+
+  <!-- Left card (teal) -->
+  <rect x="76" y="130" width="185" height="252" rx="22" fill="url(#leftGrad)" opacity="0.95"/>
+
+  <!-- Right card (purple) -->
+  <rect x="251" y="130" width="185" height="252" rx="22" fill="url(#rightGrad)" opacity="0.95"/>
+
+  <!-- Left card content lines -->
+  <rect x="100" y="165" width="60" height="10" rx="5" fill="white" opacity="0.5"/>
+  <rect x="100" y="185" width="100" height="8" rx="4" fill="white" opacity="0.25"/>
+  <!-- Amount on left -->
+  <text x="117" y="302" font-family="'SF Pro Display', 'Helvetica Neue', sans-serif" font-size="44" font-weight="700" fill="white" opacity="0.95">$24</text>
+  <!-- Small label -->
+  <rect x="100" y="348" width="80" height="8" rx="4" fill="white" opacity="0.2"/>
+  <rect x="100" y="364" width="55" height="7" rx="3" fill="white" opacity="0.15"/>
+
+  <!-- Right card content lines -->
+  <rect x="275" y="165" width="60" height="10" rx="5" fill="white" opacity="0.5"/>
+  <rect x="275" y="185" width="100" height="8" rx="4" fill="white" opacity="0.25"/>
+  <!-- Amount on right -->
+  <text x="289" y="302" font-family="'SF Pro Display', 'Helvetica Neue', sans-serif" font-size="44" font-weight="700" fill="white" opacity="0.95">$24</text>
+  <!-- Small label -->
+  <rect x="275" y="348" width="80" height="8" rx="4" fill="white" opacity="0.2"/>
+  <rect x="275" y="364" width="55" height="7" rx="3" fill="white" opacity="0.15"/>
+
+  <!-- Divider slash with glow -->
+  <line x1="272" y1="108" x2="240" y2="404" stroke="url(#dividerGrad)" stroke-width="5" stroke-linecap="round" filter="url(#glow)"/>
+
+  <!-- Split symbol circle -->
+  <circle cx="256" cy="256" r="26" fill="#0d1520" filter="url(#softGlow)"/>
+  <circle cx="256" cy="256" r="22" fill="#0d1520" stroke="white" stroke-width="2" stroke-opacity="0.6"/>
+
+  <!-- Split icon inside circle: two arrows pointing apart -->
+  <g fill="white" opacity="0.9">
+    <!-- Left arrow -->
+    <polygon points="241,256 249,249 249,253 245,253 245,259 249,259 249,263"/>
+    <!-- Right arrow -->
+    <polygon points="271,256 263,249 263,253 267,253 267,259 263,259 263,263"/>
+  </g>
+  <!-- Vertical line through circle center -->
+  <line x1="256" y1="242" x2="256" y2="270" stroke="white" stroke-width="2" stroke-opacity="0.7" stroke-linecap="round"/>
+
+  <!-- Top teal glow -->
+  <ellipse cx="170" cy="105" rx="60" ry="20" fill="#00e5c8" opacity="0.12"/>
+  <!-- Bottom purple glow -->
+  <ellipse cx="340" cy="407" rx="60" ry="20" fill="#6c63ff" opacity="0.12"/>
+</svg>
