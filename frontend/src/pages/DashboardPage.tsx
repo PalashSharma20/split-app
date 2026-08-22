@@ -669,7 +669,7 @@ export default function DashboardPage() {
                     {fmt(parseFloat(tx.amount))}
                   </td>
                   <td style={{ fontSize: 13, color: "#738091" }}>
-                    {tx.card_member ?? "—"}
+                    {tx.paid_by}
                   </td>
                   <td>
                     <SplitBadge splitType={tx.split_type} />

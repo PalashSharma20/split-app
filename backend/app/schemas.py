@@ -73,6 +73,7 @@ class SyncedTransactionOut(BaseModel):
     merchant_key: str
     sub_merchant_key: Optional[str]
     card_member: Optional[str]
+    paid_by: str
     splitwise_expense_id: Optional[str]
     split_type: Optional[SplitType]  # from most recent split_history row
     percent_you: Optional[float] = None

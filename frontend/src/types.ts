@@ -24,6 +24,7 @@ export interface Transaction {
   merchant_key: string
   sub_merchant_key: string | null
   card_member: string | null
+  paid_by: string
   you_paid: boolean
   suggestion: SplitSuggestion
 }

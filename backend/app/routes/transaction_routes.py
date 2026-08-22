@@ -248,6 +248,7 @@ def list_synced(
             merchant_key=tx.merchant_key,
             sub_merchant_key=tx.sub_merchant_key,
             card_member=tx.card_member,
+            paid_by=_user_name(_resolve_payer(tx, current_user, other_user)[0]) if other_user else "You",
             splitwise_expense_id=tx.splitwise_expense_id,
             split_type=latest_history[tx.id].split_type if tx.id in latest_history else None,
             percent_you=float(latest_history[tx.id].percent_you) if tx.id in latest_history and latest_history[tx.id].percent_you is not None else None,
@@ -384,6 +385,7 @@ def create_custom_expense(
         merchant_key=merchant or "custom",
         sub_merchant_key=sub,
         amount=str(body.amount),
+        card_member=_user_name(payer),
         uploaded_by=current_user.id,
         payer_id=payer.id,
         is_custom=True,
@@ -550,6 +552,7 @@ def edit_transaction(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     tx.payer_id = current_user.id if body.payer == "you" else other_user.id
+    tx.card_member = _user_name(current_user if body.payer == "you" else other_user)
     db.add(SplitHistory(
         transaction_id=tx.id,
         merchant_key=tx.merchant_key,
@@ -898,7 +901,8 @@ def _generate_due_recurring_expenses(db: Session) -> int:
                     description_normalized=normalized,
                     merchant_key=merchant or "recurring",
                     sub_merchant_key=sub,
-                    amount=str(template.amount),
+                amount=str(template.amount),
+                card_member=_user_name(db.get(User, template.payer_id)),
                     payer_id=template.payer_id,
                     is_custom=True,
                     recurring_expense_id=template.id,
