@@ -1,5 +1,5 @@
 import client, { localClient } from './client'
-import type { BalanceResult, ConfirmRequest, ConfirmResponse, SyncedPage, Transaction, UploadResult } from '../types'
+import type { BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, RecurringExpenseRequest, SyncedPage, Transaction, UploadResult } from '../types'
 
 export async function uploadCsv(file: File): Promise<UploadResult> {
   const form = new FormData()
@@ -37,6 +37,20 @@ export async function getSyncedTransactions(offset: number, limit = 25): Promise
 
 export async function getBalance(): Promise<BalanceResult> {
   const res = await client.get<BalanceResult>('/transactions/balance')
+  return res.data
+}
+
+export async function createCustomExpense(body: CustomExpenseRequest): Promise<ConfirmResponse> {
+  const res = await client.post<ConfirmResponse>('/transactions/custom', body)
+  return res.data
+}
+
+export async function createRecurringExpense(body: RecurringExpenseRequest): Promise<void> {
+  await client.post('/transactions/recurring', body)
+}
+
+export async function editTransaction(id: number, body: EditTransactionRequest): Promise<ConfirmResponse> {
+  const res = await client.patch<ConfirmResponse>(`/transactions/${id}`, body)
   return res.data
 }
 

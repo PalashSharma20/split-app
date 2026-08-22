@@ -1,8 +1,11 @@
-import { Button, Callout, Card, H4, Spinner, Tag } from "@blueprintjs/core"
+import { Button, Callout, Card, Dialog, FormGroup, H4, HTMLSelect, InputGroup, NumericInput, Spinner, Tag } from "@blueprintjs/core"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   fetchFromAmex,
+  createCustomExpense,
+  createRecurringExpense,
+  editTransaction,
   getBalance,
   getLastTransactionDate,
   getSyncedTransactions,
@@ -59,6 +62,27 @@ export default function DashboardPage() {
 
   const [balance, setBalance] = useState<BalanceResult | null>(null)
   const [balanceLoading, setBalanceLoading] = useState(true)
+  const [customOpen, setCustomOpen] = useState(false)
+  const [customSaving, setCustomSaving] = useState(false)
+  const [customError, setCustomError] = useState<string | null>(null)
+  const [customDescription, setCustomDescription] = useState("")
+  const [customAmount, setCustomAmount] = useState("")
+  const [customDate, setCustomDate] = useState(new Date().toISOString().slice(0, 10))
+  const [customPayer, setCustomPayer] = useState<"you" | "other">("you")
+  const [customSplit, setCustomSplit] = useState<SplitType>("equal")
+  const [customPercent, setCustomPercent] = useState("50")
+  const [customExact, setCustomExact] = useState("")
+  const [customCadence, setCustomCadence] = useState<"one-time" | "weekly" | "monthly">("one-time")
+  const [editing, setEditing] = useState<SyncedTransaction | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editDescription, setEditDescription] = useState("")
+  const [editAmount, setEditAmount] = useState("")
+  const [editDate, setEditDate] = useState("")
+  const [editPayer, setEditPayer] = useState<"you" | "other">("you")
+  const [editSplit, setEditSplit] = useState<SplitType>("equal")
+  const [editPercent, setEditPercent] = useState("50")
+  const [editExact, setEditExact] = useState("")
 
   const totalPages = Math.ceil(historyTotal / PAGE_SIZE)
 
@@ -147,6 +171,84 @@ export default function DashboardPage() {
     }
   }
 
+  async function saveCustomExpense() {
+    const amount = parseFloat(customAmount)
+    if (!customDescription.trim() || !amount || amount <= 0) {
+      setCustomError("Enter a description and an amount greater than zero.")
+      return
+    }
+    setCustomSaving(true)
+    setCustomError(null)
+    try {
+      const split = {
+        description: customDescription,
+        amount,
+        payer: customPayer,
+        split_type: customSplit,
+        percent_you: customSplit === "percent" ? parseFloat(customPercent) : null,
+        exact_you: customSplit === "exact" ? parseFloat(customExact) : null,
+      }
+      if (customCadence === "one-time") {
+        await createCustomExpense({ ...split, date: customDate })
+      } else {
+        await createRecurringExpense({ ...split, start_date: customDate, cadence: customCadence })
+      }
+      setCustomOpen(false)
+      setCustomDescription("")
+      setCustomAmount("")
+      setCustomSplit("equal")
+      setCustomCadence("one-time")
+      loadBalance()
+      setPage(0)
+    } catch (err) {
+      setCustomError(err instanceof Error ? err.message : "Could not save expense.")
+    } finally {
+      setCustomSaving(false)
+    }
+  }
+
+  function openEdit(tx: SyncedTransaction) {
+    setEditing(tx)
+    setEditError(null)
+    setEditDescription(tx.description_raw)
+    setEditAmount(tx.amount)
+    setEditDate(tx.date)
+    setEditPayer(tx.you_paid ? "you" : "other")
+    setEditSplit(tx.split_type ?? "equal")
+    setEditPercent(String(tx.percent_you ?? 50))
+    setEditExact(tx.exact_you != null ? String(tx.exact_you) : "")
+  }
+
+  async function saveEdit() {
+    if (!editing) return
+    setEditSaving(true)
+    setEditError(null)
+    try {
+      const body = {
+        payer: editPayer,
+        split_type: editSplit,
+        percent_you: editSplit === "percent" ? parseFloat(editPercent) : null,
+        exact_you: editSplit === "exact" ? parseFloat(editExact) : null,
+        ...(editing.source !== "amex" ? {
+          description: editDescription,
+          amount: parseFloat(editAmount),
+          date: editDate,
+        } : {}),
+      }
+      await editTransaction(editing.id, body)
+      setEditing(null)
+      loadBalance()
+      setHistoryLoading(true)
+      getSyncedTransactions(page * PAGE_SIZE, PAGE_SIZE).then(data => {
+        setHistory(data.items); setHistoryTotal(data.total)
+      }).finally(() => setHistoryLoading(false))
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Could not save changes.")
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
   return (
     <div>
       {/* Pending banner */}
@@ -169,7 +271,7 @@ export default function DashboardPage() {
             icon="arrow-right"
             onClick={() => navigate("/review")}
             style={{ marginLeft: 16 }}>
-            Review &amp; push
+            Review expenses
           </Button>
         </Callout>
       )}
@@ -196,7 +298,24 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Balance */}
+      {/* Shared settlement */}
+      <Card style={{ marginBottom: 20, padding: "16px 20px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 8 }}>
+          <H4 style={{ margin: 0 }}>Shared expenses</H4>
+          <Button intent="primary" icon="add" onClick={() => { setCustomError(null); setCustomOpen(true) }}>Add expense</Button>
+        </div>
+        {balanceLoading ? <Spinner size={20} /> : balance && (
+          balance.settlement_amount > 0 ? (
+            <div style={{ fontSize: 18, fontWeight: 600 }}>
+              <span style={{ textTransform: "capitalize" }}>{balance.settlement_from}</span> owes {" "}
+              <span style={{ textTransform: "capitalize" }}>{balance.settlement_to}</span>{" "}
+              {fmt(balance.settlement_amount)}
+            </div>
+          ) : <div style={{ color: "#738091" }}>You’re all settled up.</div>
+        )}
+      </Card>
+
+      {/* AMEX balance */}
       <Card style={{ marginBottom: 20, padding: "16px 20px" }}>
         <H4 style={{ margin: "0 0 12px" }}>AMEX Balance</H4>
         {balanceLoading ? (
@@ -218,6 +337,40 @@ export default function DashboardPage() {
           </div>
         )}
       </Card>
+
+      <Dialog isOpen={customOpen} title="Add shared expense" onClose={() => !customSaving && setCustomOpen(false)} style={{ width: 480 }}>
+        <div className="bp6-dialog-body">
+          <FormGroup label="Description" labelFor="custom-description">
+            <InputGroup id="custom-description" value={customDescription} onChange={e => setCustomDescription(e.target.value)} autoFocus />
+          </FormGroup>
+          <div style={{ display: "flex", gap: 12 }}>
+            <FormGroup label="Amount" style={{ flex: 1 }}>
+              <NumericInput fill value={customAmount} min={0.01} stepSize={1} minorStepSize={0.01} leftIcon="dollar" onValueChange={(_, value) => setCustomAmount(value)} />
+            </FormGroup>
+            <FormGroup label="Date" style={{ flex: 1 }}>
+              <InputGroup type="date" value={customDate} onChange={e => setCustomDate(e.target.value)} />
+            </FormGroup>
+          </div>
+          <FormGroup label="Paid by">
+            <HTMLSelect fill value={customPayer} onChange={e => setCustomPayer(e.target.value as "you" | "other")} options={[{ label: "You", value: "you" }, { label: "Other person", value: "other" }]} />
+          </FormGroup>
+          <FormGroup label="Repeats">
+            <HTMLSelect fill value={customCadence} onChange={e => setCustomCadence(e.target.value as "one-time" | "weekly" | "monthly")} options={[
+              { label: "Does not repeat", value: "one-time" }, { label: "Weekly", value: "weekly" }, { label: "Monthly", value: "monthly" },
+            ]} />
+          </FormGroup>
+          <FormGroup label="Split">
+            <HTMLSelect fill value={customSplit} onChange={e => setCustomSplit(e.target.value as SplitType)} options={[
+              { label: "Equal (50/50)", value: "equal" }, { label: "You owe all", value: "full_you" },
+              { label: "They owe all", value: "full_other" }, { label: "Percent", value: "percent" }, { label: "Exact amount", value: "exact" },
+            ]} />
+          </FormGroup>
+          {customSplit === "percent" && <FormGroup label="Your share (%)"><NumericInput fill value={customPercent} min={0} max={100} onValueChange={(_, value) => setCustomPercent(value)} /></FormGroup>}
+          {customSplit === "exact" && <FormGroup label="Your share"><NumericInput fill value={customExact} min={0} stepSize={1} minorStepSize={0.01} leftIcon="dollar" onValueChange={(_, value) => setCustomExact(value)} /></FormGroup>}
+          {customError && <Callout intent="danger">{customError}</Callout>}
+        </div>
+        <div className="bp6-dialog-footer"><div className="bp6-dialog-footer-actions"><Button onClick={() => setCustomOpen(false)}>Cancel</Button><Button intent="primary" loading={customSaving} onClick={saveCustomExpense}>Save expense</Button></div></div>
+      </Dialog>
 
       {/* Upload */}
       <Card className="upload-card">
@@ -381,6 +534,7 @@ export default function DashboardPage() {
                 <th style={{ textAlign: "right" }}>Amount</th>
                 <th>Paid by</th>
                 <th>Split</th>
+                <th aria-label="Edit" />
               </tr>
             </thead>
             <tbody>
@@ -413,6 +567,7 @@ export default function DashboardPage() {
                   <td>
                     <SplitBadge splitType={tx.split_type} />
                   </td>
+                  <td><Button minimal small icon="edit" onClick={() => openEdit(tx)}>Edit</Button></td>
                 </tr>
               ))}
             </tbody>
@@ -448,6 +603,31 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+
+      <Dialog isOpen={editing !== null} title="Edit expense" onClose={() => !editSaving && setEditing(null)} style={{ width: 480 }}>
+        {editing && <>
+          <div className="bp6-dialog-body">
+            {editing.source === "amex" ? (
+              <Callout intent="primary" style={{ marginBottom: 16 }}>AMEX statement details are preserved. You can correct who paid and the split.</Callout>
+            ) : <>
+              <FormGroup label="Description"><InputGroup value={editDescription} onChange={e => setEditDescription(e.target.value)} /></FormGroup>
+              <div style={{ display: "flex", gap: 12 }}>
+                <FormGroup label="Amount" style={{ flex: 1 }}><NumericInput fill value={editAmount} min={0.01} leftIcon="dollar" onValueChange={(_, value) => setEditAmount(value)} /></FormGroup>
+                <FormGroup label="Date" style={{ flex: 1 }}><InputGroup type="date" value={editDate} onChange={e => setEditDate(e.target.value)} /></FormGroup>
+              </div>
+              {editing.source === "recurring" && <Callout intent="primary" style={{ marginBottom: 16 }}>This changes this occurrence only; future ones keep the template.</Callout>}
+            </>}
+            <FormGroup label="Paid by"><HTMLSelect fill value={editPayer} onChange={e => setEditPayer(e.target.value as "you" | "other")} options={[{ label: "You", value: "you" }, { label: "Other person", value: "other" }]} /></FormGroup>
+            <FormGroup label="Split"><HTMLSelect fill value={editSplit} onChange={e => setEditSplit(e.target.value as SplitType)} options={[
+              { label: "Equal (50/50)", value: "equal" }, { label: "You owe all", value: "full_you" }, { label: "They owe all", value: "full_other" }, { label: "Percent", value: "percent" }, { label: "Exact amount", value: "exact" }, { label: "Personal", value: "personal" },
+            ]} /></FormGroup>
+            {editSplit === "percent" && <FormGroup label="Your share (%)"><NumericInput fill value={editPercent} min={0} max={100} onValueChange={(_, value) => setEditPercent(value)} /></FormGroup>}
+            {editSplit === "exact" && <FormGroup label="Your share"><NumericInput fill value={editExact} min={0} leftIcon="dollar" onValueChange={(_, value) => setEditExact(value)} /></FormGroup>}
+            {editError && <Callout intent="danger">{editError}</Callout>}
+          </div>
+          <div className="bp6-dialog-footer"><div className="bp6-dialog-footer-actions"><Button onClick={() => setEditing(null)}>Cancel</Button><Button intent="primary" loading={editSaving} onClick={saveEdit}>Save changes</Button></div></div>
+        </>}
+      </Dialog>
     </div>
   )
 }

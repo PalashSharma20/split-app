@@ -17,7 +17,7 @@ export default function LoginPage() {
         <img src="/icons/icon-128x128.png" alt="" width={64} height={64} style={{ marginBottom: 12 }} />
         <H2 style={{ marginTop: 0, marginBottom: 8 }}>Split</H2>
         <p style={{ color: '#738091', marginBottom: 32 }}>
-          AMEX&nbsp;→ Splitwise, automatically.
+          Track shared expenses and settle up.
         </p>
         <Button
           intent="primary"

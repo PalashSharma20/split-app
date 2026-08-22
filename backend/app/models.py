@@ -12,8 +12,8 @@ class SplitType(str, enum.Enum):
     full_other = "full_other"
     percent = "percent"
     exact = "exact"
-    personal = "personal"       # not split; skips Splitwise but recorded in history
-    already_added = "already_added"  # already in Splitwise; skips push AND history
+    personal = "personal"       # not split; recorded in history
+    already_added = "already_added"  # legacy marker; skips the ledger and history
 
 
 class User(Base):
@@ -25,7 +25,9 @@ class User(Base):
     amex_account_number = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    transactions = relationship("Transaction", back_populates="uploader")
+    transactions = relationship(
+        "Transaction", back_populates="uploader", foreign_keys="Transaction.uploaded_by"
+    )
 
 
 class Transaction(Base):
@@ -42,18 +44,22 @@ class Transaction(Base):
     category = Column(String, nullable=True)
     card_member = Column(String, nullable=True)      # "PALASH SHARMA" / "ANUSHKA R MAGANTI"
     account_number = Column(String, nullable=True)   # "-51010" — used to infer who paid
+    # Custom ledger entries have no AMEX account to infer this from.
+    payer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    is_custom = Column(Boolean, default=False, nullable=False)
+    recurring_expense_id = Column(Integer, ForeignKey("recurring_expenses.id"), nullable=True)
     uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     synced = Column(Boolean, default=False, nullable=False)
     splitwise_expense_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    uploader = relationship("User", back_populates="transactions")
+    uploader = relationship("User", back_populates="transactions", foreign_keys=[uploaded_by])
     split_history = relationship("SplitHistory", back_populates="transaction")
 
 
 class SplitHistory(Base):
     """
-    Audit trail and memory source. Written on every confirmed push (including personal).
+    Audit trail and memory source. Written on every confirmed expense (including personal).
     merchant_key and sub_merchant_key are denormalised so the suggestion engine can
     query without joining to transactions.
     """
@@ -78,3 +84,18 @@ class SplitHistory(Base):
     )
 
 
+class RecurringExpense(Base):
+    """A template whose dated ledger entries are generated when the app is used."""
+    __tablename__ = "recurring_expenses"
+
+    id = Column(Integer, primary_key=True)
+    description = Column(String, nullable=False)
+    amount = Column(Numeric(10, 2), nullable=False)
+    start_date = Column(Date, nullable=False)
+    cadence = Column(String, nullable=False)  # weekly | monthly
+    payer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    split_type = Column(Enum(SplitType), nullable=False)
+    percent_you = Column(Numeric(5, 2), nullable=True)
+    exact_you = Column(Numeric(10, 2), nullable=True)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

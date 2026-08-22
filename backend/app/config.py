@@ -25,10 +25,6 @@ class Settings:
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 
-    # Splitwise
-    SPLITWISE_API_KEY: str | None = os.getenv("SPLITWISE_API_KEY")
-    SPLITWISE_GROUP_ID: str = os.getenv("SPLITWISE_GROUP_ID", "94331017")
-
     # Suggestion engine tuning
     HISTORY_WINDOW: int = int(os.getenv("HISTORY_WINDOW", "10"))
     DECAY_LAMBDA: float = float(os.getenv("DECAY_LAMBDA", "0.3"))

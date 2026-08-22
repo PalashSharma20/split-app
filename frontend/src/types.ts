@@ -56,6 +56,17 @@ export interface SyncedTransaction {
   card_member: string | null
   splitwise_expense_id: string | null
   split_type: SplitType | null
+  percent_you: number | null
+  exact_you: number | null
+  you_paid: boolean
+  source: "amex" | "custom" | "recurring"
+}
+
+export interface EditTransactionRequest extends ConfirmRequest {
+  payer: "you" | "other"
+  description?: string
+  amount?: number
+  date?: string
 }
 
 export interface SyncedPage {
@@ -73,6 +84,24 @@ export interface BalanceResult {
   other_amex_total: number
   your_name: string
   other_name: string
+  settlement_from: string | null
+  settlement_to: string | null
+  settlement_amount: number
+}
+
+export interface CustomExpenseRequest extends ConfirmRequest {
+  description: string
+  amount: number
+  date: string
+  payer: "you" | "other"
+}
+
+export interface RecurringExpenseRequest extends ConfirmRequest {
+  description: string
+  amount: number
+  start_date: string
+  cadence: "weekly" | "monthly"
+  payer: "you" | "other"
 }
 
 

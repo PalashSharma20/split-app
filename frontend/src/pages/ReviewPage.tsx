@@ -91,7 +91,7 @@ const ALL_SPLIT_OPTIONS: { label: string; value: SplitType; hiddenWhenYouPaid?: 
   { label: 'Percent…', value: 'percent' },
   { label: 'Exact amount…', value: 'exact' },
   { label: 'Personal (skip)', value: 'personal' },
-  { label: 'Already in Splitwise', value: 'already_added' },
+  { label: 'Already recorded', value: 'already_added' },
 ]
 
 function splitOptions(youPaid: boolean) {
@@ -120,7 +120,7 @@ export default function ReviewPage() {
   const pending = rows.filter(r => !r.confirmed)
   const allDone = rows.length > 0 && pending.length === 0
 
-  async function pushAll() {
+  async function saveAll() {
     setPushing(true)
     for (const row of rows.filter(r => !r.confirmed)) {
       try {
@@ -158,7 +158,7 @@ export default function ReviewPage() {
       <div className="review-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <Button minimal icon="arrow-left" onClick={() => navigate('/dashboard')} />
-          <H3 style={{ margin: 0, whiteSpace: 'nowrap' }}>Review splits</H3>
+          <H3 style={{ margin: 0, whiteSpace: 'nowrap' }}>Review expenses</H3>
           {pending.length > 0 && <Tag round intent="warning">{pending.length} pending</Tag>}
         </div>
         <div className="review-header-actions">
@@ -175,8 +175,8 @@ export default function ReviewPage() {
             </>
           )}
           {!allDone && (
-            <Button intent="success" icon="send-to" loading={pushing} disabled={rows.length === 0} onClick={pushAll}>
-              Submit
+            <Button intent="success" icon="saved" loading={pushing} disabled={rows.length === 0} onClick={saveAll}>
+              Save expenses
             </Button>
           )}
         </div>

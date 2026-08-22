@@ -1,17 +1,15 @@
-"""Seed the two known users with Splitwise IDs and AMEX account numbers.
+"""Seed the two known users and their AMEX account numbers.
 
 Values are read from environment variables so nothing sensitive is committed:
 
     USER_1_EMAIL            e.g. you@gmail.com
-    USER_1_SPLITWISE_ID     e.g. 12345678
     USER_1_AMEX_ACCOUNT     e.g. XXXX-12345   (optional)
 
     USER_2_EMAIL            e.g. partner@gmail.com
-    USER_2_SPLITWISE_ID     e.g. 87654321
     USER_2_AMEX_ACCOUNT     e.g. XXXX-67890   (optional)
 
-If any required var is missing the migration is skipped with a warning so
-the schema migration still succeeds and you can populate users manually later.
+If either email is missing the corresponding user is skipped so the schema
+migration can still succeed and you can populate users manually later.
 
 Revision ID: 0002
 Revises: 0001
@@ -41,13 +39,14 @@ def _build_users() -> list[dict]:
     users = []
     for n in ("1", "2"):
         email = os.getenv(f"USER_{n}_EMAIL", "").strip()
-        sw_id = os.getenv(f"USER_{n}_SPLITWISE_ID", "").strip()
+        # Kept for backwards compatibility with databases created before the
+        # app became a local ledger; it is no longer required.
+        sw_id = os.getenv(f"USER_{n}_SPLITWISE_ID", "").strip() or None
         amex = os.getenv(f"USER_{n}_AMEX_ACCOUNT", "").strip() or None
 
-        if not email or not sw_id:
+        if not email:
             print(
-                f"[seed] USER_{n}_EMAIL or USER_{n}_SPLITWISE_ID not set — skipping user {n}. "
-                "Populate users.splitwise_user_id manually if needed."
+                f"[seed] USER_{n}_EMAIL not set — skipping user {n}."
             )
             continue
 

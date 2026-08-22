@@ -1,19 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-from sqlalchemy import func, case
+from sqlalchemy import func, case, select
 from sqlalchemy.orm import Session
 import csv
 import io
-from datetime import datetime
+from datetime import date, datetime, timedelta
+import calendar
 
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import SplitHistory, SplitType, Transaction, User
-from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, ImportResult, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
+from app.models import RecurringExpense, SplitHistory, SplitType, Transaction, User
+from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, ImportResult, RecurringExpenseOut, RecurringExpenseRequest, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
 from app.utils.calculations import calculate_split
 from app.utils.normalization import amount_to_bucket, is_payment_transaction, parse_description
-from app.utils.splitwise import create_expense
 from app.utils.suggestion import suggest_split
+from uuid import uuid4
 
 router = APIRouter()
 
@@ -207,8 +208,9 @@ def list_synced(
     offset: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    _generate_due_recurring_expenses(db)
     from sqlalchemy import func
 
     base = db.query(Transaction).filter_by(synced=True)
@@ -236,6 +238,7 @@ def list_synced(
         for h in db.query(SplitHistory).filter(SplitHistory.id.in_(subq)):
             latest_history[h.transaction_id] = h
 
+    other_user = db.query(User).filter(User.id != current_user.id).first()
     items = [
         SyncedTransactionOut(
             id=tx.id,
@@ -247,6 +250,10 @@ def list_synced(
             card_member=tx.card_member,
             splitwise_expense_id=tx.splitwise_expense_id,
             split_type=latest_history[tx.id].split_type if tx.id in latest_history else None,
+            percent_you=float(latest_history[tx.id].percent_you) if tx.id in latest_history and latest_history[tx.id].percent_you is not None else None,
+            exact_you=float(latest_history[tx.id].exact_you) if tx.id in latest_history and latest_history[tx.id].exact_you is not None else None,
+            you_paid=_you_paid(tx, current_user, other_user) if other_user else True,
+            source="recurring" if tx.recurring_expense_id else "custom" if tx.is_custom else "amex",
         )
         for tx in rows
     ]
@@ -269,6 +276,7 @@ def list_unsynced(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _generate_due_recurring_expenses(db)
     transactions = (
         db.query(Transaction)
         .filter_by(synced=False)
@@ -279,7 +287,7 @@ def list_unsynced(
 
 
 # ---------------------------------------------------------------------------
-# POST /transactions/{id}/confirm   — push to Splitwise (or mark personal)
+# POST /transactions/{id}/confirm   — record in the local ledger
 # ---------------------------------------------------------------------------
 
 @router.post("/{tx_id}/confirm", response_model=ConfirmResponse)
@@ -308,7 +316,7 @@ def confirm_transaction(
         db.commit()
         return ConfirmResponse(you_owed=0.0, other_owed=0.0)
 
-    # Already added to Splitwise manually — mark synced, no push, no history entry
+    # Legacy historical-import marker — mark synced, no history entry.
     if body.split_type == SplitType.already_added:
         tx.synced = True
         db.commit()
@@ -318,15 +326,6 @@ def confirm_transaction(
     other_user = db.query(User).filter(User.id != current_user.id).first()
     if other_user is None:
         raise HTTPException(status_code=500, detail="Could not find the second user")
-
-    if not current_user.splitwise_user_id or not other_user.splitwise_user_id:
-        raise HTTPException(
-            status_code=500,
-            detail="Splitwise user IDs are not set — populate users.splitwise_user_id.",
-        )
-
-    if not settings.SPLITWISE_API_KEY:
-        raise HTTPException(status_code=500, detail="SPLITWISE_API_KEY is not configured")
 
     total = float(tx.amount)
     you_owed, other_owed = calculate_split(
@@ -338,34 +337,13 @@ def confirm_transaction(
     # Determine who actually paid (or received the refund) based on account_number.
     payer, non_payer = _resolve_payer(tx, current_user, other_user)
 
-    # For refunds (negative amounts), Splitwise doesn't accept negative costs.
-    # We flip the payer/non-payer roles and use absolute values: the credit recipient
-    # now "owes" the other person their share, expressed as a positive expense.
+    # For refunds, flip the payer/non-payer roles so the credit reverses the debt.
     if total < 0:
         payer, non_payer = non_payer, payer
         total = abs(total)
         you_owed, other_owed = abs(you_owed), abs(other_owed)
 
-    # Map payer/non-payer shares from the current_user's perspective.
-    if payer.id == current_user.id:
-        payer_owed, non_payer_owed = you_owed, other_owed
-    else:
-        payer_owed, non_payer_owed = other_owed, you_owed
-
-    expense_id = create_expense(
-        api_key=settings.SPLITWISE_API_KEY,
-        group_id=settings.SPLITWISE_GROUP_ID,
-        description=tx.description_raw,
-        total=total,
-        payer_user_id=payer.splitwise_user_id,
-        other_user_id=non_payer.splitwise_user_id,
-        payer_owed=payer_owed,
-        other_owed=non_payer_owed,
-        date=tx.date,
-    )
-
     tx.synced = True
-    tx.splitwise_expense_id = expense_id
     db.add(SplitHistory(
         transaction_id=tx.id,
         merchant_key=tx.merchant_key,
@@ -378,10 +356,142 @@ def confirm_transaction(
     db.commit()
 
     return ConfirmResponse(
-        splitwise_expense_id=expense_id,
         you_owed=you_owed,
         other_owed=other_owed,
     )
+
+
+@router.post("/custom", response_model=ConfirmResponse)
+def create_custom_expense(
+    body: CustomExpenseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Add an expense directly to the shared local ledger, outside AMEX."""
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    if other_user is None:
+        raise HTTPException(status_code=500, detail="Could not find the second user")
+    if body.split_type in {SplitType.personal, SplitType.already_added}:
+        raise HTTPException(status_code=422, detail="Custom expenses must be shared expenses")
+
+    normalized, merchant, sub = parse_description(body.description)
+    payer = current_user if body.payer == "you" else other_user
+    tx = Transaction(
+        amex_reference=f"custom-{uuid4()}",
+        date=body.date,
+        description_raw=body.description,
+        description_normalized=normalized,
+        merchant_key=merchant or "custom",
+        sub_merchant_key=sub,
+        amount=str(body.amount),
+        uploaded_by=current_user.id,
+        payer_id=payer.id,
+        is_custom=True,
+        synced=True,
+    )
+    db.add(tx)
+    db.flush()
+    db.add(SplitHistory(
+        transaction_id=tx.id,
+        merchant_key=tx.merchant_key,
+        sub_merchant_key=tx.sub_merchant_key,
+        split_type=body.split_type,
+        percent_you=body.percent_you,
+        exact_you=body.exact_you,
+        amount_bucket=amount_to_bucket(body.amount),
+    ))
+    you_owed, other_owed = calculate_split(body.split_type, body.amount, body.percent_you, body.exact_you)
+    db.commit()
+    return ConfirmResponse(you_owed=you_owed, other_owed=other_owed)
+
+
+@router.get("/recurring", response_model=list[RecurringExpenseOut])
+def list_recurring_expenses(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return db.query(RecurringExpense).filter_by(active=True).order_by(RecurringExpense.description).all()
+
+
+@router.post("/recurring", response_model=RecurringExpenseOut)
+def create_recurring_expense(
+    body: RecurringExpenseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    if other_user is None:
+        raise HTTPException(status_code=500, detail="Could not find the second user")
+    template = RecurringExpense(
+        description=body.description,
+        amount=str(body.amount),
+        start_date=body.start_date,
+        cadence=body.cadence,
+        payer_id=current_user.id if body.payer == "you" else other_user.id,
+        split_type=body.split_type,
+        percent_you=body.percent_you,
+        exact_you=body.exact_you,
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    _generate_due_recurring_expenses(db)
+    return template
+
+
+@router.patch("/{tx_id}", response_model=ConfirmResponse)
+def edit_transaction(
+    tx_id: int,
+    body: EditTransactionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Correct a ledger entry; recurring edits affect this occurrence only."""
+    tx = db.get(Transaction, tx_id)
+    if tx is None or not tx.synced:
+        raise HTTPException(status_code=404, detail="Saved transaction not found")
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    if other_user is None:
+        raise HTTPException(status_code=500, detail="Could not find the second user")
+    if body.split_type == SplitType.already_added:
+        raise HTTPException(status_code=422, detail="Already recorded is only for legacy imports")
+
+    # Imported AMEX records are an audit of the statement, so only their
+    # allocation can change. Local entries may be corrected in full.
+    if not tx.is_custom and any(value is not None for value in (body.description, body.amount, body.date)):
+        raise HTTPException(status_code=422, detail="AMEX amount, date, and description cannot be edited")
+    if tx.is_custom:
+        if body.description is not None:
+            normalized, merchant, sub = parse_description(body.description)
+            tx.description_raw = body.description
+            tx.description_normalized = normalized
+            tx.merchant_key = merchant or "custom"
+            tx.sub_merchant_key = sub
+        if body.amount is not None:
+            tx.amount = str(body.amount)
+        if body.date is not None:
+            tx.date = body.date
+
+    total = float(tx.amount)
+    if body.split_type == SplitType.exact and (body.exact_you is None or body.exact_you > total):
+        raise HTTPException(status_code=422, detail="Exact share must not exceed the expense amount")
+    try:
+        you_owed, other_owed = calculate_split(body.split_type, total, body.percent_you, body.exact_you)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    tx.payer_id = current_user.id if body.payer == "you" else other_user.id
+    db.add(SplitHistory(
+        transaction_id=tx.id,
+        merchant_key=tx.merchant_key,
+        sub_merchant_key=tx.sub_merchant_key,
+        split_type=body.split_type,
+        percent_you=body.percent_you,
+        exact_you=body.exact_you,
+        amount_bucket=amount_to_bucket(total),
+    ))
+    db.commit()
+    return ConfirmResponse(you_owed=you_owed, other_owed=other_owed)
 
 
 # ---------------------------------------------------------------------------
@@ -541,9 +651,11 @@ def get_balance(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Sum each person's synced transactions by which card they appeared on (all-time).
+    Sum each person's imported AMEX transactions by card (all-time), plus the
+    shared-ledger net settlement. Custom expenses deliberately do not affect AMEX.
     Uses a SQL aggregate so performance stays constant regardless of row count.
     """
+    _generate_due_recurring_expenses(db)
     other_user = db.query(User).filter(User.id != current_user.id).first()
     if other_user is None:
         raise HTTPException(status_code=500, detail="Could not find the second user")
@@ -554,13 +666,47 @@ def get_balance(
     row = db.query(
         func.sum(case((Transaction.account_number == your_account, Transaction.amount), else_=0)).label("your_total"),
         func.sum(case((Transaction.account_number == other_account, Transaction.amount), else_=0)).label("other_total"),
-    ).filter(Transaction.synced == True).one()
+    ).filter(Transaction.synced == True, Transaction.is_custom == False).one()
+
+    latest_history_ids = (
+        select(func.max(SplitHistory.id))
+        .group_by(SplitHistory.transaction_id)
+    )
+    histories = (
+        db.query(SplitHistory, Transaction)
+        .join(Transaction, SplitHistory.transaction_id == Transaction.id)
+        .filter(
+            SplitHistory.id.in_(latest_history_ids),
+            Transaction.synced == True,
+            SplitHistory.split_type.notin_([SplitType.personal, SplitType.already_added]),
+        )
+        .all()
+    )
+    net_you_owed = 0.0
+    for history, tx in histories:
+        you_share, other_share = calculate_split(
+            history.split_type, float(tx.amount),
+            float(history.percent_you) if history.percent_you is not None else None,
+            float(history.exact_you) if history.exact_you is not None else None,
+        )
+        payer, _ = _resolve_payer(tx, current_user, other_user)
+        # Positive means the other person owes the current user.
+        net_you_owed += other_share if payer.id == current_user.id else -you_share
+
+    settlement_from = settlement_to = None
+    if round(net_you_owed, 2) > 0:
+        settlement_from, settlement_to = other_user.email.split("@")[0], current_user.email.split("@")[0]
+    elif round(net_you_owed, 2) < 0:
+        settlement_from, settlement_to = current_user.email.split("@")[0], other_user.email.split("@")[0]
 
     return BalanceResult(
         your_amex_total=round(float(row.your_total or 0), 2),
         other_amex_total=round(float(row.other_total or 0), 2),
         your_name=current_user.email.split("@")[0],
         other_name=other_user.email.split("@")[0],
+        settlement_from=settlement_from,
+        settlement_to=settlement_to,
+        settlement_amount=round(abs(net_you_owed), 2),
     )
 
 
@@ -586,12 +732,77 @@ def _resolve_payer(tx: Transaction, current_user: User, other_user: User) -> tup
     Return (payer, non_payer) based on account_number matching.
     Falls back to current_user as payer if no match is found.
     """
+    if tx.payer_id:
+        return (current_user, other_user) if tx.payer_id == current_user.id else (other_user, current_user)
     if tx.account_number:
         if other_user.amex_account_number and tx.account_number == other_user.amex_account_number:
             return other_user, current_user
         if current_user.amex_account_number and tx.account_number == current_user.amex_account_number:
             return current_user, other_user
     return current_user, other_user
+
+
+def _next_occurrence(occurrence: date, cadence: str, anchor_day: int | None = None) -> date:
+    if cadence == "weekly":
+        return occurrence + timedelta(days=7)
+    # Preserve the configured day where possible; e.g. Jan 31 → Feb 28 → Mar 31.
+    next_month = occurrence.month % 12 + 1
+    year = occurrence.year + (1 if occurrence.month == 12 else 0)
+    day = min(anchor_day or occurrence.day, calendar.monthrange(year, next_month)[1])
+    return date(year, next_month, day)
+
+
+def _generate_due_recurring_expenses(db: Session) -> int:
+    """Materialize each missing recurring occurrence through today.
+
+    This deliberately runs during normal app use, avoiding a scheduler while
+    still catching up after the app has not been opened for a while.
+    """
+    created = 0
+    today = date.today()
+    templates = db.query(RecurringExpense).filter(
+        RecurringExpense.active == True,
+        RecurringExpense.start_date <= today,
+    ).all()
+    for template in templates:
+        existing_dates = {
+            row[0] for row in db.query(Transaction.date).filter(
+                Transaction.recurring_expense_id == template.id
+            ).all()
+        }
+        occurrence = template.start_date
+        while occurrence <= today:
+            if occurrence not in existing_dates:
+                normalized, merchant, sub = parse_description(template.description)
+                tx = Transaction(
+                    amex_reference=f"recurring-{template.id}-{occurrence.isoformat()}",
+                    date=occurrence,
+                    description_raw=template.description,
+                    description_normalized=normalized,
+                    merchant_key=merchant or "recurring",
+                    sub_merchant_key=sub,
+                    amount=str(template.amount),
+                    payer_id=template.payer_id,
+                    is_custom=True,
+                    recurring_expense_id=template.id,
+                    synced=True,
+                )
+                db.add(tx)
+                db.flush()
+                db.add(SplitHistory(
+                    transaction_id=tx.id,
+                    merchant_key=tx.merchant_key,
+                    sub_merchant_key=tx.sub_merchant_key,
+                    split_type=template.split_type,
+                    percent_you=template.percent_you,
+                    exact_you=template.exact_you,
+                    amount_bucket=amount_to_bucket(float(tx.amount)),
+                ))
+                created += 1
+            occurrence = _next_occurrence(occurrence, template.cadence, template.start_date.day)
+    if created:
+        db.commit()
+    return created
 
 
 def _you_paid(tx: Transaction, current_user: User, other_user: User) -> bool:
