@@ -408,9 +408,13 @@ def create_custom_expense(
 @router.get("/recurring", response_model=list[RecurringExpenseOut])
 def list_recurring_expenses(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    return db.query(RecurringExpense).filter_by(active=True).order_by(RecurringExpense.description).all()
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    return [
+        _recurring_to_out(template, current_user, other_user)
+        for template in db.query(RecurringExpense).filter_by(active=True).order_by(RecurringExpense.description).all()
+    ]
 
 
 @router.post("/recurring", response_model=RecurringExpenseOut)
@@ -436,7 +440,48 @@ def create_recurring_expense(
     db.commit()
     db.refresh(template)
     _generate_due_recurring_expenses(db)
-    return template
+    return _recurring_to_out(template, current_user, other_user)
+
+
+@router.patch("/recurring/{recurring_id}", response_model=RecurringExpenseOut)
+def edit_recurring_expense(
+    recurring_id: int,
+    body: RecurringExpenseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    template = db.get(RecurringExpense, recurring_id)
+    if template is None or not template.active:
+        raise HTTPException(status_code=404, detail="Recurring expense not found")
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    if other_user is None:
+        raise HTTPException(status_code=500, detail="Could not find the second user")
+    template.description = body.description
+    template.amount = str(body.amount)
+    template.start_date = body.start_date
+    template.cadence = body.cadence
+    template.payer_id = current_user.id if body.payer == "you" else other_user.id
+    template.split_type = body.split_type
+    template.percent_you = body.percent_you
+    template.exact_you = body.exact_you
+    db.commit()
+    db.refresh(template)
+    _generate_due_recurring_expenses(db)
+    return _recurring_to_out(template, current_user, other_user)
+
+
+@router.delete("/recurring/{recurring_id}", status_code=204)
+def delete_recurring_expense(
+    recurring_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    template = db.get(RecurringExpense, recurring_id)
+    if template is None or not template.active:
+        raise HTTPException(status_code=404, detail="Recurring expense not found")
+    # Preserve generated occurrences as history; only stop future generation.
+    template.active = False
+    db.commit()
 
 
 @router.post("/settlements/mark-settled", response_model=BalanceResult)
@@ -516,6 +561,24 @@ def edit_transaction(
     ))
     db.commit()
     return ConfirmResponse(you_owed=you_owed, other_owed=other_owed)
+
+
+@router.delete("/{tx_id}/custom", status_code=204)
+def delete_custom_transaction(
+    tx_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    tx = db.get(Transaction, tx_id)
+    if tx is None or not tx.synced:
+        raise HTTPException(status_code=404, detail="Saved transaction not found")
+    if not tx.is_custom:
+        raise HTTPException(status_code=422, detail="Imported AMEX transactions cannot be deleted")
+    if tx.recurring_expense_id:
+        raise HTTPException(status_code=422, detail="Delete or change the recurring template instead")
+    db.query(SplitHistory).filter_by(transaction_id=tx.id).delete()
+    db.delete(tx)
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +842,21 @@ def _resolve_payer(tx: Transaction, current_user: User, other_user: User) -> tup
 
 def _user_name(user: User) -> str:
     return user.display_name or user.email.split("@")[0]
+
+
+def _recurring_to_out(template: RecurringExpense, current_user: User, other_user: User | None) -> RecurringExpenseOut:
+    return RecurringExpenseOut(
+        id=template.id,
+        description=template.description,
+        amount=float(template.amount),
+        start_date=template.start_date,
+        cadence=template.cadence,
+        active=template.active,
+        payer="you" if template.payer_id == current_user.id else "other",
+        split_type=template.split_type,
+        percent_you=float(template.percent_you) if template.percent_you is not None else None,
+        exact_you=float(template.exact_you) if template.exact_you is not None else None,
+    )
 
 
 def _next_occurrence(occurrence: date, cadence: str, anchor_day: int | None = None) -> date:

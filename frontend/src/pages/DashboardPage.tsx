@@ -1,11 +1,15 @@
-import { Button, Callout, Card, Dialog, FormGroup, H4, HTMLSelect, InputGroup, NumericInput, Spinner, Tag } from "@blueprintjs/core"
+import { Alert, Button, Callout, Card, Dialog, FormGroup, H4, HTMLSelect, InputGroup, NumericInput, Spinner, Tag } from "@blueprintjs/core"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   fetchFromAmex,
   createCustomExpense,
   createRecurringExpense,
+  getRecurringExpenses,
+  updateRecurringExpense,
+  deleteRecurringExpense,
   editTransaction,
+  deleteCustomExpense,
   markSettled,
   getBalance,
   getLastTransactionDate,
@@ -14,7 +18,7 @@ import {
   uploadCsv,
 } from "../api/transactions"
 import { fmt } from "../utils/calculations"
-import type { BalanceResult, SyncedTransaction, SplitType, UploadResult } from "../types"
+import type { BalanceResult, RecurringExpense, SyncedTransaction, SplitType, UploadResult } from "../types"
 
 const SPLIT_LABELS: Record<SplitType, string> = {
   equal: "50 / 50",
@@ -85,6 +89,21 @@ export default function DashboardPage() {
   const [editPercent, setEditPercent] = useState("50")
   const [editExact, setEditExact] = useState("")
   const [settling, setSettling] = useState(false)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [templates, setTemplates] = useState<RecurringExpense[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(false)
+  const [editingTemplate, setEditingTemplate] = useState<RecurringExpense | null>(null)
+  const [templateSaving, setTemplateSaving] = useState(false)
+  const [templateDescription, setTemplateDescription] = useState("")
+  const [templateAmount, setTemplateAmount] = useState("")
+  const [templateDate, setTemplateDate] = useState("")
+  const [templateCadence, setTemplateCadence] = useState<"weekly" | "monthly">("monthly")
+  const [templatePayer, setTemplatePayer] = useState<"you" | "other">("you")
+  const [templateSplit, setTemplateSplit] = useState<SplitType>("equal")
+  const [templatePercent, setTemplatePercent] = useState("50")
+  const [templateExact, setTemplateExact] = useState("")
 
   const totalPages = Math.ceil(historyTotal / PAGE_SIZE)
 
@@ -263,6 +282,52 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleDeleteExpense() {
+    if (!editing) return
+    setDeleting(true)
+    try {
+      await deleteCustomExpense(editing.id)
+      setDeleteAlertOpen(false)
+      setEditing(null)
+      loadBalance()
+      setHistoryLoading(true)
+      const data = await getSyncedTransactions(page * PAGE_SIZE, PAGE_SIZE)
+      setHistory(data.items)
+      setHistoryTotal(data.total)
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Could not delete expense.")
+    } finally {
+      setDeleting(false)
+      setHistoryLoading(false)
+    }
+  }
+
+  async function openTemplates() {
+    setTemplatesOpen(true)
+    setTemplatesLoading(true)
+    try { setTemplates(await getRecurringExpenses()) } finally { setTemplatesLoading(false) }
+  }
+
+  function openTemplateEdit(template: RecurringExpense) {
+    setEditingTemplate(template)
+    setTemplateDescription(template.description); setTemplateAmount(String(template.amount)); setTemplateDate(template.start_date)
+    setTemplateCadence(template.cadence); setTemplatePayer(template.payer); setTemplateSplit(template.split_type)
+    setTemplatePercent(String(template.percent_you ?? 50)); setTemplateExact(template.exact_you != null ? String(template.exact_you) : "")
+  }
+
+  async function saveTemplate() {
+    if (!editingTemplate) return
+    setTemplateSaving(true)
+    try {
+      const updated = await updateRecurringExpense(editingTemplate.id, { description: templateDescription, amount: parseFloat(templateAmount), start_date: templateDate, cadence: templateCadence, payer: templatePayer, split_type: templateSplit, percent_you: templateSplit === "percent" ? parseFloat(templatePercent) : null, exact_you: templateSplit === "exact" ? parseFloat(templateExact) : null })
+      setTemplates(rows => rows.map(row => row.id === updated.id ? updated : row)); setEditingTemplate(null); loadBalance()
+    } finally { setTemplateSaving(false) }
+  }
+
+  async function removeTemplate(id: number) {
+    await deleteRecurringExpense(id); setTemplates(rows => rows.filter(row => row.id !== id)); loadBalance()
+  }
+
   return (
     <div>
       {/* Pending banner */}
@@ -316,15 +381,18 @@ export default function DashboardPage() {
       <Card style={{ marginBottom: 20, padding: "16px 20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 8 }}>
           <H4 style={{ margin: 0 }}>Shared expenses</H4>
-          <Button intent="primary" icon="add" onClick={() => { setCustomError(null); setCustomOpen(true) }}>Add expense</Button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button minimal icon="repeat" onClick={openTemplates}>Recurring</Button>
+            {balance?.settlement_amount ? <Button intent="success" icon="tick-circle" loading={settling} onClick={handleMarkSettled}>Mark settled</Button> : null}
+            <Button intent="primary" icon="add" onClick={() => { setCustomError(null); setCustomOpen(true) }}>Add expense</Button>
+          </div>
         </div>
         {balanceLoading ? <Spinner size={20} /> : balance && (
           balance.settlement_amount > 0 ? (
-            <div style={{ fontSize: 18, fontWeight: 600 }}>
+            <div style={{ fontSize: 18 }}>
               <div><span style={{ textTransform: "capitalize" }}>{balance.settlement_from}</span> owes {" "}
                 <span style={{ textTransform: "capitalize" }}>{balance.settlement_to}</span>{" "}
                 {fmt(balance.settlement_amount)}</div>
-              <Button small intent="success" icon="tick-circle" loading={settling} onClick={handleMarkSettled} style={{ marginTop: 10 }}>Mark settled</Button>
             </div>
           ) : <div style={{ color: "#738091" }}>You’re all settled up.</div>
         )}
@@ -385,6 +453,30 @@ export default function DashboardPage() {
           {customError && <Callout intent="danger">{customError}</Callout>}
         </div>
         <div className="bp6-dialog-footer"><div className="bp6-dialog-footer-actions"><Button onClick={() => setCustomOpen(false)}>Cancel</Button><Button intent="primary" loading={customSaving} onClick={saveCustomExpense}>Save expense</Button></div></div>
+      </Dialog>
+
+      <Dialog isOpen={templatesOpen} title="Recurring expenses" onClose={() => setTemplatesOpen(false)} style={{ width: 560 }}>
+        <div className="bp6-dialog-body">
+          {templatesLoading ? <Spinner size={24} /> : templates.length === 0 ? <Callout>No recurring expenses yet.</Callout> : templates.map(template => (
+            <div key={template.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid #e1e8ed" }}>
+              <div><div style={{ fontWeight: 600 }}>{template.description} · {fmt(template.amount)}</div><div style={{ fontSize: 12, color: "#738091" }}>{template.cadence} from {template.start_date} · {SPLIT_LABELS[template.split_type]}</div></div>
+              <div><Button minimal small icon="edit" onClick={() => openTemplateEdit(template)} /><Button minimal small intent="danger" icon="trash" onClick={() => removeTemplate(template.id)} /></div>
+            </div>
+          ))}
+        </div>
+      </Dialog>
+
+      <Dialog isOpen={editingTemplate !== null} title="Edit recurring expense" onClose={() => !templateSaving && setEditingTemplate(null)} style={{ width: 480 }}>
+        <div className="bp6-dialog-body">
+          <Callout intent="primary" style={{ marginBottom: 16 }}>Changes apply to future occurrences only.</Callout>
+          <FormGroup label="Description"><InputGroup value={templateDescription} onChange={e => setTemplateDescription(e.target.value)} /></FormGroup>
+          <div style={{ display: "flex", gap: 12 }}><FormGroup label="Amount" style={{ flex: 1 }}><NumericInput fill value={templateAmount} min={0.01} leftIcon="dollar" onValueChange={(_, value) => setTemplateAmount(value)} /></FormGroup><FormGroup label="Starts" style={{ flex: 1 }}><InputGroup type="date" value={templateDate} onChange={e => setTemplateDate(e.target.value)} /></FormGroup></div>
+          <FormGroup label="Repeats"><HTMLSelect fill value={templateCadence} onChange={e => setTemplateCadence(e.target.value as "weekly" | "monthly")} options={[{ label: "Weekly", value: "weekly" }, { label: "Monthly", value: "monthly" }]} /></FormGroup>
+          <FormGroup label="Paid by"><HTMLSelect fill value={templatePayer} onChange={e => setTemplatePayer(e.target.value as "you" | "other")} options={[{ label: "You", value: "you" }, { label: "Other person", value: "other" }]} /></FormGroup>
+          <FormGroup label="Split"><HTMLSelect fill value={templateSplit} onChange={e => setTemplateSplit(e.target.value as SplitType)} options={[{ label: "Equal (50/50)", value: "equal" }, { label: "You owe all", value: "full_you" }, { label: "They owe all", value: "full_other" }, { label: "Percent", value: "percent" }, { label: "Exact amount", value: "exact" }]} /></FormGroup>
+          {templateSplit === "percent" && <FormGroup label="Your share (%)"><NumericInput fill value={templatePercent} min={0} max={100} onValueChange={(_, value) => setTemplatePercent(value)} /></FormGroup>}
+          {templateSplit === "exact" && <FormGroup label="Your share"><NumericInput fill value={templateExact} min={0} leftIcon="dollar" onValueChange={(_, value) => setTemplateExact(value)} /></FormGroup>}
+        </div><div className="bp6-dialog-footer"><div className="bp6-dialog-footer-actions"><Button onClick={() => setEditingTemplate(null)}>Cancel</Button><Button intent="primary" loading={templateSaving} onClick={saveTemplate}>Save future changes</Button></div></div>
       </Dialog>
 
       {/* Upload */}
@@ -640,9 +732,12 @@ export default function DashboardPage() {
             {editSplit === "exact" && <FormGroup label="Your share"><NumericInput fill value={editExact} min={0} leftIcon="dollar" onValueChange={(_, value) => setEditExact(value)} /></FormGroup>}
             {editError && <Callout intent="danger">{editError}</Callout>}
           </div>
-          <div className="bp6-dialog-footer"><div className="bp6-dialog-footer-actions"><Button onClick={() => setEditing(null)}>Cancel</Button><Button intent="primary" loading={editSaving} onClick={saveEdit}>Save changes</Button></div></div>
+          <div className="bp6-dialog-footer"><div className="bp6-dialog-footer-actions">{editing.source === "custom" && <Button intent="danger" icon="trash" onClick={() => setDeleteAlertOpen(true)}>Delete</Button>}<Button onClick={() => setEditing(null)}>Cancel</Button><Button intent="primary" loading={editSaving} onClick={saveEdit}>Save changes</Button></div></div>
         </>}
       </Dialog>
+      <Alert isOpen={deleteAlertOpen} intent="danger" icon="trash" confirmButtonText="Delete expense" cancelButtonText="Cancel" loading={deleting} onConfirm={handleDeleteExpense} onCancel={() => setDeleteAlertOpen(false)}>
+        <p>Delete this custom expense? This cannot be undone.</p>
+      </Alert>
     </div>
   )
 }

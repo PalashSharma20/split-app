@@ -201,7 +201,10 @@ class RecurringExpenseOut(BaseModel):
     start_date: DateType
     cadence: str
     active: bool
-    model_config = {"from_attributes": True}
+    payer: str
+    split_type: SplitType
+    percent_you: Optional[float] = None
+    exact_you: Optional[float] = None
 
 
 class EditTransactionRequest(ConfirmRequest):

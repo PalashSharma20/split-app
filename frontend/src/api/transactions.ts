@@ -1,5 +1,5 @@
 import client, { localClient } from './client'
-import type { BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, RecurringExpenseRequest, SyncedPage, Transaction, UploadResult } from '../types'
+import type { BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, RecurringExpense, RecurringExpenseRequest, SyncedPage, Transaction, UploadResult } from '../types'
 
 export async function uploadCsv(file: File): Promise<UploadResult> {
   const form = new FormData()
@@ -49,9 +49,27 @@ export async function createRecurringExpense(body: RecurringExpenseRequest): Pro
   await client.post('/transactions/recurring', body)
 }
 
+export async function getRecurringExpenses(): Promise<RecurringExpense[]> {
+  const res = await client.get<RecurringExpense[]>('/transactions/recurring')
+  return res.data
+}
+
+export async function updateRecurringExpense(id: number, body: RecurringExpenseRequest): Promise<RecurringExpense> {
+  const res = await client.patch<RecurringExpense>(`/transactions/recurring/${id}`, body)
+  return res.data
+}
+
+export async function deleteRecurringExpense(id: number): Promise<void> {
+  await client.delete(`/transactions/recurring/${id}`)
+}
+
 export async function editTransaction(id: number, body: EditTransactionRequest): Promise<ConfirmResponse> {
   const res = await client.patch<ConfirmResponse>(`/transactions/${id}`, body)
   return res.data
+}
+
+export async function deleteCustomExpense(id: number): Promise<void> {
+  await client.delete(`/transactions/${id}/custom`)
 }
 
 export async function markSettled(): Promise<BalanceResult> {

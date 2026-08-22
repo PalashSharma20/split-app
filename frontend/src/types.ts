@@ -104,6 +104,19 @@ export interface RecurringExpenseRequest extends ConfirmRequest {
   payer: "you" | "other"
 }
 
+export interface RecurringExpense {
+  id: number
+  description: string
+  amount: number
+  start_date: string
+  cadence: "weekly" | "monthly"
+  active: boolean
+  payer: "you" | "other"
+  split_type: SplitType
+  percent_you: number | null
+  exact_you: number | null
+}
+
 
 export interface RowState {
   tx: Transaction
