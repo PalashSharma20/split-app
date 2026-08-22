@@ -21,7 +21,10 @@ def upgrade() -> None:
         sa.Column("start_date", sa.Date(), nullable=False),
         sa.Column("cadence", sa.String(), nullable=False),
         sa.Column("payer_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
-        sa.Column("split_type", sa.Enum("equal", "full_you", "full_other", "percent", "exact", "personal", "already_added", name="splittype"), nullable=False),
+        # Store the validated SplitType value without creating another
+        # PostgreSQL enum type; the existing split_history enum is reused by
+        # the application model when values are read and written.
+        sa.Column("split_type", sa.String(), nullable=False),
         sa.Column("percent_you", sa.Numeric(5, 2), nullable=True),
         sa.Column("exact_you", sa.Numeric(10, 2), nullable=True),
         sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
