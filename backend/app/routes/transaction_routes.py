@@ -844,7 +844,7 @@ def _resolve_payer(tx: Transaction, current_user: User, other_user: User) -> tup
 
 
 def _user_name(user: User) -> str:
-    return user.display_name or user.email.split("@")[0]
+    return settings.USER_DISPLAY_NAMES.get(user.email) or user.display_name or user.email.split("@")[0]
 
 
 def _recurring_to_out(template: RecurringExpense, current_user: User, other_user: User | None) -> RecurringExpenseOut:

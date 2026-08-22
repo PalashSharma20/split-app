@@ -20,6 +20,14 @@ class Settings:
         {e for e in [_user1_email, _user2_email] if e}
         or {e.strip() for e in os.getenv("ALLOWED_EMAILS", "").split(",") if e.strip()}
     )
+    USER_DISPLAY_NAMES: dict[str, str] = {
+        email: name
+        for email, name in (
+            (_user1_email, os.getenv("USER_1_NAME", "").strip()),
+            (_user2_email, os.getenv("USER_2_NAME", "").strip()),
+        )
+        if email and name
+    }
 
     # Frontend URL (used for post-login redirect)
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
