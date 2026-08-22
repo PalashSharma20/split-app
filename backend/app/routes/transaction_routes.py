@@ -9,8 +9,8 @@ import calendar
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import RecurringExpense, SplitHistory, SplitType, Transaction, User
-from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, ImportResult, RecurringExpenseOut, RecurringExpenseRequest, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
+from app.models import RecurringExpense, Settlement, SplitHistory, SplitType, Transaction, User
+from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, ImportResult, MarkSettlementRequest, RecurringExpenseOut, RecurringExpenseRequest, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
 from app.utils.calculations import calculate_split
 from app.utils.normalization import amount_to_bucket, is_payment_transaction, parse_description
 from app.utils.suggestion import suggest_split
@@ -439,6 +439,30 @@ def create_recurring_expense(
     return template
 
 
+@router.post("/settlements/mark-settled", response_model=BalanceResult)
+def mark_settled(
+    body: MarkSettlementRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record payment of the currently outstanding net balance."""
+    balance = _calculate_balance(db, current_user, generate=False)
+    if balance.settlement_amount <= 0 or not balance.settlement_from or not balance.settlement_to:
+        raise HTTPException(status_code=422, detail="There is no outstanding settlement to mark as paid")
+    other_user = db.query(User).filter(User.id != current_user.id).first()
+    from_user = current_user if balance.settlement_from == _user_name(current_user) else other_user
+    to_user = current_user if balance.settlement_to == _user_name(current_user) else other_user
+    db.add(Settlement(
+        from_user_id=from_user.id,
+        to_user_id=to_user.id,
+        amount=balance.settlement_amount,
+        settled_on=body.settled_on or date.today(),
+        note=body.note,
+    ))
+    db.commit()
+    return _calculate_balance(db, current_user, generate=False)
+
+
 @router.patch("/{tx_id}", response_model=ConfirmResponse)
 def edit_transaction(
     tx_id: int,
@@ -655,7 +679,12 @@ def get_balance(
     shared-ledger net settlement. Custom expenses deliberately do not affect AMEX.
     Uses a SQL aggregate so performance stays constant regardless of row count.
     """
-    _generate_due_recurring_expenses(db)
+    return _calculate_balance(db, current_user, generate=True)
+
+
+def _calculate_balance(db: Session, current_user: User, generate: bool) -> BalanceResult:
+    if generate:
+        _generate_due_recurring_expenses(db)
     other_user = db.query(User).filter(User.id != current_user.id).first()
     if other_user is None:
         raise HTTPException(status_code=500, detail="Could not find the second user")
@@ -693,17 +722,23 @@ def get_balance(
         # Positive means the other person owes the current user.
         net_you_owed += other_share if payer.id == current_user.id else -you_share
 
+    for settlement in db.query(Settlement).all():
+        if settlement.from_user_id == current_user.id:
+            net_you_owed += float(settlement.amount)
+        elif settlement.to_user_id == current_user.id:
+            net_you_owed -= float(settlement.amount)
+
     settlement_from = settlement_to = None
     if round(net_you_owed, 2) > 0:
-        settlement_from, settlement_to = other_user.email.split("@")[0], current_user.email.split("@")[0]
+        settlement_from, settlement_to = _user_name(other_user), _user_name(current_user)
     elif round(net_you_owed, 2) < 0:
-        settlement_from, settlement_to = current_user.email.split("@")[0], other_user.email.split("@")[0]
+        settlement_from, settlement_to = _user_name(current_user), _user_name(other_user)
 
     return BalanceResult(
         your_amex_total=round(float(row.your_total or 0), 2),
         other_amex_total=round(float(row.other_total or 0), 2),
-        your_name=current_user.email.split("@")[0],
-        other_name=other_user.email.split("@")[0],
+        your_name=_user_name(current_user),
+        other_name=_user_name(other_user),
         settlement_from=settlement_from,
         settlement_to=settlement_to,
         settlement_amount=round(abs(net_you_owed), 2),
@@ -740,6 +775,10 @@ def _resolve_payer(tx: Transaction, current_user: User, other_user: User) -> tup
         if current_user.amex_account_number and tx.account_number == current_user.amex_account_number:
             return current_user, other_user
     return current_user, other_user
+
+
+def _user_name(user: User) -> str:
+    return user.display_name or user.email.split("@")[0]
 
 
 def _next_occurrence(occurrence: date, cadence: str, anchor_day: int | None = None) -> date:

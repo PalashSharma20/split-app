@@ -6,6 +6,7 @@ import {
   createCustomExpense,
   createRecurringExpense,
   editTransaction,
+  markSettled,
   getBalance,
   getLastTransactionDate,
   getSyncedTransactions,
@@ -83,6 +84,7 @@ export default function DashboardPage() {
   const [editSplit, setEditSplit] = useState<SplitType>("equal")
   const [editPercent, setEditPercent] = useState("50")
   const [editExact, setEditExact] = useState("")
+  const [settling, setSettling] = useState(false)
 
   const totalPages = Math.ceil(historyTotal / PAGE_SIZE)
 
@@ -249,6 +251,18 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleMarkSettled() {
+    setSettling(true)
+    try {
+      const next = await markSettled()
+      setBalance(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not mark settlement.")
+    } finally {
+      setSettling(false)
+    }
+  }
+
   return (
     <div>
       {/* Pending banner */}
@@ -307,9 +321,10 @@ export default function DashboardPage() {
         {balanceLoading ? <Spinner size={20} /> : balance && (
           balance.settlement_amount > 0 ? (
             <div style={{ fontSize: 18, fontWeight: 600 }}>
-              <span style={{ textTransform: "capitalize" }}>{balance.settlement_from}</span> owes {" "}
-              <span style={{ textTransform: "capitalize" }}>{balance.settlement_to}</span>{" "}
-              {fmt(balance.settlement_amount)}
+              <div><span style={{ textTransform: "capitalize" }}>{balance.settlement_from}</span> owes {" "}
+                <span style={{ textTransform: "capitalize" }}>{balance.settlement_to}</span>{" "}
+                {fmt(balance.settlement_amount)}</div>
+              <Button small intent="success" icon="tick-circle" loading={settling} onClick={handleMarkSettled} style={{ marginTop: 10 }}>Mark settled</Button>
             </div>
           ) : <div style={{ color: "#738091" }}>You’re all settled up.</div>
         )}

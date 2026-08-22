@@ -111,6 +111,11 @@ class BalanceResult(BaseModel):
     settlement_amount: float = 0.0
 
 
+class MarkSettlementRequest(BaseModel):
+    settled_on: Optional[DateType] = None
+    note: Optional[str] = None
+
+
 class CustomExpenseRequest(ConfirmRequest):
     description: str
     amount: float

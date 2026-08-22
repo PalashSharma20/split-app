@@ -21,6 +21,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True, index=True, nullable=False)
+    display_name = Column(String, nullable=True)
     splitwise_user_id = Column(String, nullable=True)
     amex_account_number = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -98,4 +99,17 @@ class RecurringExpense(Base):
     percent_you = Column(Numeric(5, 2), nullable=True)
     exact_you = Column(Numeric(10, 2), nullable=True)
     active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Settlement(Base):
+    """Money paid between the two users to settle previously recorded debt."""
+    __tablename__ = "settlements"
+
+    id = Column(Integer, primary_key=True)
+    from_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    to_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    amount = Column(Numeric(10, 2), nullable=False)
+    settled_on = Column(Date, nullable=False)
+    note = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

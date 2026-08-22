@@ -54,6 +54,11 @@ export async function editTransaction(id: number, body: EditTransactionRequest):
   return res.data
 }
 
+export async function markSettled(): Promise<BalanceResult> {
+  const res = await client.post<BalanceResult>('/transactions/settlements/mark-settled', {})
+  return res.data
+}
+
 
 export async function fetchFromAmex(startDate: string): Promise<UploadResult> {
   // Step 1: pull raw CSV from AMEX via the local backend (reads Chrome cookies)
