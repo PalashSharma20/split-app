@@ -54,3 +54,25 @@ def calculate_split(
             raise ValueError(f"Unknown split_type: {split_type}")
 
     return you_owed, other_owed
+
+
+def orient_split(
+    split_type: SplitType,
+    total: float,
+    percent_you: float | None = None,
+    exact_you: float | None = None,
+    *,
+    reverse: bool = False,
+) -> tuple[SplitType, float | None, float | None]:
+    """Return split fields from the other user's perspective when reversed."""
+    if not reverse:
+        return split_type, percent_you, exact_you
+    if split_type == SplitType.full_you:
+        return SplitType.full_other, None, None
+    if split_type == SplitType.full_other:
+        return SplitType.full_you, None, None
+    if split_type == SplitType.percent:
+        return split_type, round(100 - float(percent_you or 0), 2), None
+    if split_type == SplitType.exact:
+        return split_type, None, round(float(total) - float(exact_you or 0), 2)
+    return split_type, percent_you, exact_you

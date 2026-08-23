@@ -11,7 +11,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import RecurringExpense, Settlement, SplitHistory, SplitType, Transaction, User
 from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, ImportResult, MarkSettlementRequest, RecurringExpenseOut, RecurringExpenseRequest, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
-from app.utils.calculations import calculate_split
+from app.utils.calculations import calculate_split, orient_split
 from app.utils.normalization import amount_to_bucket, is_payment_transaction, parse_description
 from app.utils.suggestion import suggest_split
 from uuid import uuid4
@@ -106,6 +106,7 @@ def _parse_and_insert_csv(
                 merchant_key=tx.merchant_key,
                 sub_merchant_key=tx.sub_merchant_key,
                 split_type=SplitType.personal,
+                split_for_user_id=current_user.id,
                 amount_bucket=amount_to_bucket(float(tx.amount)),
             ))
 
@@ -239,8 +240,13 @@ def list_synced(
             latest_history[h.transaction_id] = h
 
     other_user = db.query(User).filter(User.id != current_user.id).first()
-    items = [
-        SyncedTransactionOut(
+    items = []
+    for tx in rows:
+        history = latest_history.get(tx.id)
+        split_type, percent_you, exact_you = _history_values_for_user(
+            history, float(tx.amount), current_user.id
+        )
+        items.append(SyncedTransactionOut(
             id=tx.id,
             date=tx.date,
             description_raw=tx.description_raw,
@@ -250,14 +256,12 @@ def list_synced(
             card_member=tx.card_member,
             paid_by=_user_name(_resolve_payer(tx, current_user, other_user)[0]) if other_user else "You",
             splitwise_expense_id=tx.splitwise_expense_id,
-            split_type=latest_history[tx.id].split_type if tx.id in latest_history else None,
-            percent_you=float(latest_history[tx.id].percent_you) if tx.id in latest_history and latest_history[tx.id].percent_you is not None else None,
-            exact_you=float(latest_history[tx.id].exact_you) if tx.id in latest_history and latest_history[tx.id].exact_you is not None else None,
+            split_type=split_type,
+            percent_you=percent_you,
+            exact_you=exact_you,
             you_paid=_you_paid(tx, current_user, other_user) if other_user else True,
             source="recurring" if tx.recurring_expense_id else "custom" if tx.is_custom else "amex",
-        )
-        for tx in rows
-    ]
+        ))
 
     return SyncedPage(items=items, total=total, has_more=(offset + limit) < total)
 
@@ -312,6 +316,7 @@ def confirm_transaction(
             merchant_key=tx.merchant_key,
             sub_merchant_key=tx.sub_merchant_key,
             split_type=SplitType.personal,
+            split_for_user_id=current_user.id,
             amount_bucket=amount_to_bucket(float(tx.amount)),
         ))
         db.commit()
@@ -352,6 +357,7 @@ def confirm_transaction(
         split_type=body.split_type,
         percent_you=body.percent_you,
         exact_you=body.exact_you,
+        split_for_user_id=current_user.id,
         amount_bucket=amount_to_bucket(float(tx.amount)),
     ))
     db.commit()
@@ -400,6 +406,7 @@ def create_custom_expense(
         split_type=body.split_type,
         percent_you=body.percent_you,
         exact_you=body.exact_you,
+        split_for_user_id=current_user.id,
         amount_bucket=amount_to_bucket(body.amount),
     ))
     you_owed, other_owed = calculate_split(body.split_type, body.amount, body.percent_you, body.exact_you)
@@ -437,6 +444,7 @@ def create_recurring_expense(
         split_type=body.split_type,
         percent_you=body.percent_you,
         exact_you=body.exact_you,
+        split_for_user_id=current_user.id,
     )
     db.add(template)
     db.commit()
@@ -466,6 +474,7 @@ def edit_recurring_expense(
     template.split_type = body.split_type
     template.percent_you = body.percent_you
     template.exact_you = body.exact_you
+    template.split_for_user_id = current_user.id
     db.commit()
     db.refresh(template)
     _generate_due_recurring_expenses(db)
@@ -560,6 +569,7 @@ def edit_transaction(
         split_type=body.split_type,
         percent_you=body.percent_you,
         exact_you=body.exact_you,
+        split_for_user_id=current_user.id,
         amount_bucket=amount_to_bucket(total),
     ))
     db.commit()
@@ -721,6 +731,7 @@ async def import_historical(
                 split_type=split_type,
                 percent_you=percent_you,
                 exact_you=exact_you,
+                split_for_user_id=current_user.id,
                 amount_bucket=amount_to_bucket(amount),
             ))
             rules_created += 1
@@ -779,10 +790,8 @@ def _calculate_balance(db: Session, current_user: User, generate: bool) -> Balan
     )
     net_you_owed = 0.0
     for history, tx in histories:
-        you_share, other_share = calculate_split(
-            history.split_type, float(tx.amount),
-            float(history.percent_you) if history.percent_you is not None else None,
-            float(history.exact_you) if history.exact_you is not None else None,
+        you_share, other_share = _history_shares_for_user(
+            history, float(tx.amount), current_user.id
         )
         payer, _ = _resolve_payer(tx, current_user, other_user)
         # Positive means the other person owes the current user.
@@ -847,7 +856,56 @@ def _user_name(user: User) -> str:
     return settings.USER_DISPLAY_NAMES.get(user.email) or user.display_name or user.email.split("@")[0]
 
 
+def _history_values_for_user(
+    history: SplitHistory | None,
+    total: float,
+    current_user_id: int,
+) -> tuple[SplitType | None, float | None, float | None]:
+    if history is None:
+        return None, None, None
+    return orient_split(
+        history.split_type,
+        total,
+        float(history.percent_you) if history.percent_you is not None else None,
+        float(history.exact_you) if history.exact_you is not None else None,
+        reverse=(
+            history.split_for_user_id is not None
+            and history.split_for_user_id != current_user_id
+        ),
+    )
+
+
+def _history_shares_for_user(
+    history: SplitHistory,
+    total: float,
+    current_user_id: int,
+) -> tuple[float, float]:
+    """Calculate shares once, then swap them to avoid per-row rounding drift."""
+    stored_user_share, other_share = calculate_split(
+        history.split_type,
+        total,
+        float(history.percent_you) if history.percent_you is not None else None,
+        float(history.exact_you) if history.exact_you is not None else None,
+    )
+    if (
+        history.split_for_user_id is not None
+        and history.split_for_user_id != current_user_id
+    ):
+        return other_share, stored_user_share
+    return stored_user_share, other_share
+
+
 def _recurring_to_out(template: RecurringExpense, current_user: User, other_user: User | None) -> RecurringExpenseOut:
+    split_type, percent_you, exact_you = orient_split(
+        template.split_type,
+        float(template.amount),
+        float(template.percent_you) if template.percent_you is not None else None,
+        float(template.exact_you) if template.exact_you is not None else None,
+        reverse=(
+            template.split_for_user_id is not None
+            and template.split_for_user_id != current_user.id
+        ),
+    )
     return RecurringExpenseOut(
         id=template.id,
         description=template.description,
@@ -856,9 +914,9 @@ def _recurring_to_out(template: RecurringExpense, current_user: User, other_user
         cadence=template.cadence,
         active=template.active,
         payer="you" if template.payer_id == current_user.id else "other",
-        split_type=template.split_type,
-        percent_you=float(template.percent_you) if template.percent_you is not None else None,
-        exact_you=float(template.exact_you) if template.exact_you is not None else None,
+        split_type=split_type,
+        percent_you=percent_you,
+        exact_you=exact_you,
     )
 
 
@@ -901,9 +959,10 @@ def _generate_due_recurring_expenses(db: Session) -> int:
                     description_normalized=normalized,
                     merchant_key=merchant or "recurring",
                     sub_merchant_key=sub,
-                amount=str(template.amount),
-                card_member=_user_name(db.get(User, template.payer_id)),
+                    amount=str(template.amount),
+                    card_member=_user_name(db.get(User, template.payer_id)),
                     payer_id=template.payer_id,
+                    uploaded_by=template.split_for_user_id,
                     is_custom=True,
                     recurring_expense_id=template.id,
                     synced=True,
@@ -917,6 +976,7 @@ def _generate_due_recurring_expenses(db: Session) -> int:
                     split_type=template.split_type,
                     percent_you=template.percent_you,
                     exact_you=template.exact_you,
+                    split_for_user_id=template.split_for_user_id,
                     amount_bucket=amount_to_bucket(float(tx.amount)),
                 ))
                 created += 1
@@ -934,7 +994,9 @@ def _you_paid(tx: Transaction, current_user: User, other_user: User) -> bool:
 def _tx_to_out(db: Session, tx: Transaction, current_user: User) -> TransactionOut:
     other_user = db.query(User).filter(User.id != current_user.id).first()
 
-    suggestion_data = suggest_split(db, tx.merchant_key, tx.sub_merchant_key, float(tx.amount))
+    suggestion_data = suggest_split(
+        db, tx.merchant_key, tx.sub_merchant_key, float(tx.amount), current_user.id
+    )
 
     from app.schemas import SplitSuggestion
     return TransactionOut(

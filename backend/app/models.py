@@ -73,6 +73,10 @@ class SplitHistory(Base):
     split_type = Column(Enum(SplitType), nullable=False)
     percent_you = Column(Numeric(5, 2), nullable=True)
     exact_you = Column(Numeric(10, 2), nullable=True)
+    # The user whose share is represented by full_you/full_other,
+    # percent_you, and exact_you. Without this, the same split is interpreted
+    # differently depending on which user happens to request the balance.
+    split_for_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     amount_bucket = Column(String, nullable=True)  # xs / sm / md / lg
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -98,6 +102,7 @@ class RecurringExpense(Base):
     split_type = Column(Enum(SplitType), nullable=False)
     percent_you = Column(Numeric(5, 2), nullable=True)
     exact_you = Column(Numeric(10, 2), nullable=True)
+    split_for_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 

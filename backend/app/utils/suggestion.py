@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import SplitHistory, SplitType
 from app.config import settings
-from app.utils.calculations import calculate_split
+from app.utils.calculations import calculate_split, orient_split
 from app.utils.normalization import amount_to_bucket
 
 
@@ -20,6 +20,7 @@ def suggest_split(
     merchant_key: str,
     sub_merchant_key: str | None,
     amount: float,
+    current_user_id: int,
 ) -> dict:
     """
     Return a suggestion dict with keys:
@@ -38,7 +39,7 @@ def suggest_split(
             "confidence": None,
         }
 
-    winner, confidence, percent_you, exact_you = _score(rows)
+    winner, confidence, percent_you, exact_you = _score(rows, current_user_id)
 
     you_owed, other_owed = calculate_split(
         winner, amount, percent_you=percent_you, exact_you=exact_you
@@ -93,7 +94,7 @@ def _fetch_history(
     return _query(merchant_key=merchant_key)
 
 
-def _score(rows: list[SplitHistory]) -> tuple:
+def _score(rows: list[SplitHistory], current_user_id: int) -> tuple:
     """
     Assign exponential-decay weights (most recent = rank 0) and return:
         (winning_split_type, confidence, avg_percent_you, avg_exact_you)
@@ -105,14 +106,21 @@ def _score(rows: list[SplitHistory]) -> tuple:
     weighted_exact: dict[str, float] = defaultdict(float)
 
     for rank, row in enumerate(rows):
+        split_type, percent_you, exact_you = orient_split(
+            row.split_type,
+            float(row.transaction.amount),
+            float(row.percent_you) if row.percent_you is not None else None,
+            float(row.exact_you) if row.exact_you is not None else None,
+            reverse=row.split_for_user_id is not None and row.split_for_user_id != current_user_id,
+        )
         w = math.exp(-lam * rank)
-        scores[row.split_type] += w
+        scores[split_type] += w
 
-        if row.split_type == SplitType.percent and row.percent_you is not None:
-            weighted_percent[row.split_type] += w * float(row.percent_you)
+        if split_type == SplitType.percent and percent_you is not None:
+            weighted_percent[split_type] += w * percent_you
 
-        if row.split_type == SplitType.exact and row.exact_you is not None:
-            weighted_exact[row.split_type] += w * float(row.exact_you)
+        if split_type == SplitType.exact and exact_you is not None:
+            weighted_exact[split_type] += w * exact_you
 
     total = sum(scores.values())
     winner = max(scores, key=scores.get)  # type: ignore[arg-type]

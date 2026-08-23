@@ -89,7 +89,8 @@ split-app/
 
 ### `split_history`
 - `id`, `transaction_id` (fk), `merchant_key`, `sub_merchant_key`
-- `split_type` (enum), `percent_you`, `exact_you`, `created_at`
+- `split_type` (enum), `percent_you`, `exact_you`, `split_for_user_id` (fk users), `created_at`
+- `split_for_user_id` records whose perspective the `*_you` fields use, so either user can view the same ledger correctly.
 - Every confirmed Splitwise push writes a row here automatically.
 
 ---
