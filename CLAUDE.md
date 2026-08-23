@@ -28,7 +28,8 @@ split-app/
 
 ### Frontend
 - **React** 19 + **Vite**
-- **BlueprintJS** 6 (UI components)
+- **Mantine** 9 (responsive UI components)
+- **TanStack Query** 5 (server state and mutations)
 - **React Router** 7
 - **Axios** (withCredentials for cookie auth)
 - **TypeScript**
@@ -48,6 +49,7 @@ split-app/
 | `backend/app/auth.py` | Session token sign/verify |
 | `backend/app/routes/auth_routes.py` | `/auth/*` endpoints |
 | `backend/app/routes/transaction_routes.py` | `/transactions/*` endpoints |
+| `backend/app/services/expenses.py` | Shared single/batch expense confirmation logic |
 | `backend/app/utils/normalization.py` | AMEX description → merchant keys |
 | `backend/app/utils/suggestion.py` | Recency-weighted split suggestion |
 | `backend/app/utils/calculations.py` | Split amount math |
@@ -64,8 +66,10 @@ split-app/
 | `frontend/src/components/ProtectedRoute.tsx` | Auth guard |
 | `frontend/src/components/AppShell.tsx` | Nav + layout |
 | `frontend/src/pages/LoginPage.tsx` | Google OAuth entry |
-| `frontend/src/pages/DashboardPage.tsx` | Upload CSV + transaction history |
-| `frontend/src/pages/ReviewPage.tsx` | Review splits + confirm to Splitwise |
+| `frontend/src/pages/DashboardPage.tsx` | Overview, balances, and quick actions |
+| `frontend/src/pages/ReviewPage.tsx` | Import and atomically save pending expenses |
+| `frontend/src/pages/ActivityPage.tsx` | Saved transaction history and editing |
+| `frontend/src/pages/MorePage.tsx` | Recurring expenses and account settings |
 | `frontend/src/api/client.ts` | Axios base client |
 | `frontend/src/api/auth.ts` | Auth API calls |
 | `frontend/src/api/transactions.ts` | Transaction API calls |
@@ -150,7 +154,8 @@ Defined in `backend/app/utils/normalization.py → amount_to_bucket()`. Stored i
 - `GET /transactions/` — List unsynced transactions with split suggestions
 - `GET /transactions/history` — Synced transactions (paginated, 25/page)
 - `GET /transactions/last-date` — Date of most recent transaction
-- `POST /transactions/{id}/confirm` — Confirm split, push to Splitwise, record history
+- `POST /transactions/{id}/confirm` — Save one reviewed split to the local ledger
+- `POST /transactions/batch-confirm` — Atomically confirm a reviewed group of expenses
 - `POST /transactions/import-historical?confirm=wipe` — Wipe all data and bulk-import from enriched CSV (see below)
 - `DELETE /transactions/pending` — Delete all unsynced transactions
 - `GET /transactions/fetch-amex?start_date=YYYY-MM-DD` — (dev-only) Fetch AMEX CSV via Chrome cookies, returns raw CSV
@@ -305,7 +310,7 @@ npm run dev
 
 ### AMEX Auto-Fetch (dev only)
 
-The "Fetch from AMEX" button on the dashboard (dev mode only):
+The "Fetch AMEX" button on the Review tab (dev mode only):
 1. Calls local backend `GET /transactions/fetch-amex` which reads Chrome's AMEX cookies via `browser_cookie3`
 2. Returns raw CSV text
 3. Frontend uploads CSV to prod backend's `POST /transactions/upload`

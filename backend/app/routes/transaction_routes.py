@@ -10,7 +10,8 @@ from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
 from app.models import RecurringExpense, Settlement, SplitHistory, SplitType, Transaction, User
-from app.schemas import BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, ImportResult, MarkSettlementRequest, RecurringExpenseOut, RecurringExpenseRequest, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
+from app.schemas import BalanceResult, BatchConfirmRequest, BatchConfirmResponse, BatchConfirmResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, ImportResult, MarkSettlementRequest, RecurringExpenseOut, RecurringExpenseRequest, SyncedPage, SyncedTransactionOut, TransactionOut, UploadResult
+from app.services.expenses import ConfirmationError, confirm_expense
 from app.utils.calculations import calculate_split, orient_split
 from app.utils.normalization import amount_to_bucket, is_payment_transaction, parse_description
 from app.utils.suggestion import suggest_split
@@ -302,69 +303,41 @@ def confirm_transaction(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    tx = db.get(Transaction, tx_id)
-    if tx is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    if tx.synced:
-        raise HTTPException(status_code=409, detail="Transaction already synced")
-
-    # Personal — record in history (so we learn the merchant is personal) then done
-    if body.split_type == SplitType.personal:
-        tx.synced = True
-        db.add(SplitHistory(
-            transaction_id=tx.id,
-            merchant_key=tx.merchant_key,
-            sub_merchant_key=tx.sub_merchant_key,
-            split_type=SplitType.personal,
-            split_for_user_id=current_user.id,
-            amount_bucket=amount_to_bucket(float(tx.amount)),
-        ))
+    try:
+        result = confirm_expense(db, tx_id, body, current_user)
         db.commit()
-        return ConfirmResponse(you_owed=0.0, other_owed=0.0)
+        return result
+    except ConfirmationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    # Legacy historical-import marker — mark synced, no history entry.
-    if body.split_type == SplitType.already_added:
-        tx.synced = True
+
+@router.post("/batch-confirm", response_model=BatchConfirmResponse)
+def batch_confirm_transactions(
+    body: BatchConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Atomically save all reviewed expenses in a single database transaction."""
+    try:
+        confirmed = []
+        for item in body.items:
+            result = confirm_expense(db, item.transaction_id, item, current_user)
+            confirmed.append(
+                BatchConfirmResult(
+                    transaction_id=item.transaction_id,
+                    you_owed=result.you_owed,
+                    other_owed=result.other_owed,
+                )
+            )
         db.commit()
-        return ConfirmResponse(you_owed=0.0, other_owed=0.0)
+    except ConfirmationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    # Resolve both users
-    other_user = db.query(User).filter(User.id != current_user.id).first()
-    if other_user is None:
-        raise HTTPException(status_code=500, detail="Could not find the second user")
-
-    total = float(tx.amount)
-    you_owed, other_owed = calculate_split(
-        body.split_type, total,
-        percent_you=body.percent_you,
-        exact_you=body.exact_you,
-    )
-
-    # Determine who actually paid (or received the refund) based on account_number.
-    payer, non_payer = _resolve_payer(tx, current_user, other_user)
-
-    # For refunds, flip the payer/non-payer roles so the credit reverses the debt.
-    if total < 0:
-        payer, non_payer = non_payer, payer
-        total = abs(total)
-        you_owed, other_owed = abs(you_owed), abs(other_owed)
-
-    tx.synced = True
-    db.add(SplitHistory(
-        transaction_id=tx.id,
-        merchant_key=tx.merchant_key,
-        sub_merchant_key=tx.sub_merchant_key,
-        split_type=body.split_type,
-        percent_you=body.percent_you,
-        exact_you=body.exact_you,
-        split_for_user_id=current_user.id,
-        amount_bucket=amount_to_bucket(float(tx.amount)),
-    ))
-    db.commit()
-
-    return ConfirmResponse(
-        you_owed=you_owed,
-        other_owed=other_owed,
+    return BatchConfirmResponse(
+        confirmed=confirmed,
+        balance=_calculate_balance(db, current_user, generate=False),
     )
 
 

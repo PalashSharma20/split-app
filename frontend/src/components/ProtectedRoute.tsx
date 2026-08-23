@@ -1,5 +1,5 @@
 import { Navigate } from 'react-router-dom'
-import { Spinner } from '@blueprintjs/core'
+import { Center, Loader } from '@mantine/core'
 import { useAuth } from '../context/AuthContext'
 import type { ReactNode } from 'react'
 
@@ -8,9 +8,7 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <div className="page-center">
-        <Spinner />
-      </div>
+      <Center mih="100dvh"><Loader /></Center>
     )
   }
 

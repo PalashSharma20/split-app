@@ -1,431 +1,166 @@
-import { Alert, Button, Callout, H3, HTMLSelect, NumericInput, Spinner, Tag } from '@blueprintjs/core'
+import { Alert, Badge, Button, Card, FileButton, Group, Loader, Modal, Paper, SimpleGrid, Stack, Text, Title } from '@mantine/core'
+import { IconCheck, IconDownload, IconFileUpload, IconLogin, IconTrash } from '@tabler/icons-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useReducer, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { clearPending, confirmTransaction, listUnsynced } from '../api/transactions'
+import { batchConfirmTransactions, clearPending, fetchFromAmex, getLastTransactionDate, listUnsynced, uploadCsv } from '../api/transactions'
+import SplitControls from '../components/SplitControls'
+import type { BatchConfirmItem, RowState, SplitType, Transaction, UploadResult } from '../types'
 import { calculateSplit, fmt } from '../utils/calculations'
-import type { RowState, SplitType, Transaction } from '../types'
-
-// ─── Reducer ─────────────────────────────────────────────────────────────────
 
 type Action =
-  | { type: 'SET_ROWS'; rows: RowState[] }
-  | { type: 'SET_SPLIT_TYPE'; id: number; value: SplitType }
-  | { type: 'SET_PERCENT'; id: number; value: string }
-  | { type: 'SET_EXACT'; id: number; value: string }
-  | { type: 'MARK_CONFIRMED'; id: number }
-  | { type: 'MARK_ERROR'; id: number; message: string }
-  | { type: 'CLEAR_ALL' }
+  | { type: 'set'; rows: RowState[] }
+  | { type: 'split'; id: number; value: SplitType }
+  | { type: 'percent'; id: number; value: string }
+  | { type: 'exact'; id: number; value: string }
 
-function rowReducer(rows: RowState[], action: Action): RowState[] {
-  switch (action.type) {
-    case 'SET_ROWS':
-      return action.rows
-
-    case 'SET_SPLIT_TYPE':
-      return rows.map(r => {
-        if (r.tx.id !== action.id) return r
-        const amount = parseFloat(r.tx.amount)
-        const { youOwed, otherOwed } = calculateSplit(
-          action.value, amount,
-          parseFloat(r.percentYou) || null,
-          parseFloat(r.exactYou) || null,
-        )
-        return { ...r, splitType: action.value, youOwed, otherOwed }
-      })
-
-    case 'SET_PERCENT':
-      return rows.map(r => {
-        if (r.tx.id !== action.id) return r
-        const pct = parseFloat(action.value)
-        const { youOwed, otherOwed } = calculateSplit('percent', parseFloat(r.tx.amount), isNaN(pct) ? null : pct)
-        return { ...r, percentYou: action.value, youOwed, otherOwed }
-      })
-
-    case 'SET_EXACT':
-      return rows.map(r => {
-        if (r.tx.id !== action.id) return r
-        const exact = parseFloat(action.value)
-        const { youOwed, otherOwed } = calculateSplit('exact', parseFloat(r.tx.amount), null, isNaN(exact) ? null : exact)
-        return { ...r, exactYou: action.value, youOwed, otherOwed }
-      })
-
-    case 'MARK_CONFIRMED':
-      return rows.map(r => r.tx.id === action.id ? { ...r, confirmed: true, error: null } : r)
-
-    case 'MARK_ERROR':
-      return rows.map(r => r.tx.id === action.id ? { ...r, error: action.message } : r)
-
-    case 'CLEAR_ALL':
-      return []
-  }
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function txToRow(tx: Transaction): RowState {
-  const { split_type, percent_you, exact_you, you_owed, other_owed } = tx.suggestion
+function toRow(tx: Transaction): RowState {
   return {
     tx,
-    splitType: split_type,
-    percentYou: percent_you != null ? String(percent_you) : '50',
-    exactYou: exact_you != null ? String(exact_you) : '',
-    youOwed: you_owed,
-    otherOwed: other_owed,
+    splitType: tx.suggestion.split_type,
+    percentYou: String(tx.suggestion.percent_you ?? 50),
+    exactYou: tx.suggestion.exact_you == null ? '' : String(tx.suggestion.exact_you),
+    youOwed: tx.suggestion.you_owed,
+    otherOwed: tx.suggestion.other_owed,
     confirmed: false,
     error: null,
   }
 }
 
-function ConfidenceBadge({ confidence }: { confidence: number | null }) {
-  if (confidence === null)
-    return <span className="confidence-badge confidence-none">no history</span>
-  const pct = Math.round(confidence * 100)
-  const cls = pct >= 80 ? 'confidence-high' : pct >= 50 ? 'confidence-medium' : 'confidence-low'
-  return <span className={`confidence-badge ${cls}`}>{pct}%</span>
+function reducer(rows: RowState[], action: Action): RowState[] {
+  if (action.type === 'set') return action.rows
+  return rows.map(row => {
+    if (row.tx.id !== action.id) return row
+    const splitType = action.type === 'split' ? action.value : row.splitType
+    const percent = action.type === 'percent' ? action.value : row.percentYou
+    const exact = action.type === 'exact' ? action.value : row.exactYou
+    const shares = calculateSplit(splitType, Number(row.tx.amount), Number(percent), Number(exact))
+    return { ...row, splitType, percentYou: percent, exactYou: exact, youOwed: shares.youOwed, otherOwed: shares.otherOwed }
+  })
 }
-
-const ALL_SPLIT_OPTIONS: { label: string; value: SplitType; hiddenWhenYouPaid?: boolean; hiddenWhenTheyPaid?: boolean }[] = [
-  { label: 'Equal (50/50)', value: 'equal' },
-  { label: 'You owe all', value: 'full_you', hiddenWhenYouPaid: true },
-  { label: 'They owe all', value: 'full_other', hiddenWhenTheyPaid: true },
-  { label: 'Percent…', value: 'percent' },
-  { label: 'Exact amount…', value: 'exact' },
-  { label: 'Personal (skip)', value: 'personal' },
-  { label: 'Already recorded', value: 'already_added' },
-]
-
-function splitOptions(youPaid: boolean) {
-  return ALL_SPLIT_OPTIONS.filter(o =>
-    youPaid ? !o.hiddenWhenYouPaid : !o.hiddenWhenTheyPaid
-  )
-}
-
-// ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function ReviewPage() {
-  const navigate = useNavigate()
-  const [rows, dispatch] = useReducer(rowReducer, [])
-  const [loading, setLoading] = useState(true)
-  const [pushing, setPushing] = useState(false)
-  const [clearAlertOpen, setClearAlertOpen] = useState(false)
-  const [clearing, setClearing] = useState(false)
+  const queryClient = useQueryClient()
+  const pending = useQuery({ queryKey: ['pending'], queryFn: listUnsynced })
+  const lastDate = useQuery({ queryKey: ['last-date'], queryFn: getLastTransactionDate })
+  const [rows, dispatch] = useReducer(reducer, [])
+  const [clearOpen, setClearOpen] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
+  const [amexAuthRequired, setAmexAuthRequired] = useState(false)
+  const [amexLoginOpened, setAmexLoginOpened] = useState(false)
 
-  useEffect(() => {
-    listUnsynced()
-      .then(txs => dispatch({ type: 'SET_ROWS', rows: txs.map(txToRow) }))
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }, [])
+  useEffect(() => { if (pending.data) dispatch({ type: 'set', rows: pending.data.map(toRow) }) }, [pending.data])
 
-  const pending = rows.filter(r => !r.confirmed)
-  const allDone = rows.length > 0 && pending.length === 0
-
-  async function saveAll() {
-    setPushing(true)
-    for (const row of rows.filter(r => !r.confirmed)) {
-      try {
-        await confirmTransaction(row.tx.id, {
-          split_type: row.splitType,
-          percent_you: row.splitType === 'percent' ? parseFloat(row.percentYou) : null,
-          exact_you: row.splitType === 'exact' ? parseFloat(row.exactYou) : null,
-        })
-        dispatch({ type: 'MARK_CONFIRMED', id: row.tx.id })
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'Failed'
-        dispatch({ type: 'MARK_ERROR', id: row.tx.id, message: msg })
-      }
-    }
-    setPushing(false)
+  async function refreshAfterImport(result: UploadResult) {
+    setUploadResult(result)
+    setSaved(false)
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['pending'] }),
+      queryClient.invalidateQueries({ queryKey: ['last-date'] }),
+    ])
   }
 
-  async function handleClearAll() {
-    setClearing(true)
-    try {
-      await clearPending()
-      dispatch({ type: 'CLEAR_ALL' })
-    } catch (err) {
-      console.error(err)
-    } finally {
-      setClearing(false)
-      setClearAlertOpen(false)
-    }
+  const upload = useMutation({
+    mutationFn: uploadCsv,
+    onSuccess: refreshAfterImport,
+  })
+  const fetchAmex = useMutation({
+    mutationFn: () => fetchFromAmex(lastDate.data ?? `${new Date().toISOString().slice(0, 7)}-01`),
+    onSuccess: result => { setAmexAuthRequired(false); return refreshAfterImport(result) },
+    onError: (error: unknown) => {
+      const status = (error as { response?: { status?: number } })?.response?.status
+      if (status === 401) setAmexAuthRequired(true)
+    },
+  })
+  const save = useMutation({
+    mutationFn: () => {
+      const items: BatchConfirmItem[] = rows.map(row => ({
+        transaction_id: row.tx.id,
+        split_type: row.splitType,
+        percent_you: row.splitType === 'percent' ? Number(row.percentYou) : null,
+        exact_you: row.splitType === 'exact' ? Number(row.exactYou) : null,
+      }))
+      return batchConfirmTransactions(items)
+    },
+    onSuccess: async result => {
+      queryClient.setQueryData(['balance'], result.balance)
+      setSaved(true)
+      await queryClient.invalidateQueries()
+    },
+  })
+  const clear = useMutation({
+    mutationFn: clearPending,
+    onSuccess: async () => { setClearOpen(false); await queryClient.invalidateQueries({ queryKey: ['pending'] }) },
+  })
+
+  function openAmexLogin() {
+    window.open('https://www.americanexpress.com/en-us/account/login?inav=en_us_menu_login', '_blank')
+    setAmexLoginOpened(true)
   }
 
-  if (loading) return <div className="page-center"><Spinner /></div>
+  if (pending.isLoading) return <Group justify="center" py="xl"><Loader /></Group>
 
   return (
-    <div>
-      <div className="review-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <Button minimal icon="arrow-left" onClick={() => navigate('/dashboard')} />
-          <H3 style={{ margin: 0, whiteSpace: 'nowrap' }}>Review expenses</H3>
-          {pending.length > 0 && <Tag round intent="warning">{pending.length} pending</Tag>}
-        </div>
-        <div className="review-header-actions">
-          {!allDone && rows.length > 0 && (
-            <>
-              <span className="review-clear-full">
-                <Button minimal intent="danger" icon="trash" disabled={pushing} onClick={() => setClearAlertOpen(true)}>
-                  Clear all
-                </Button>
-              </span>
-              <span className="review-clear-icon">
-                <Button minimal intent="danger" icon="trash" disabled={pushing} onClick={() => setClearAlertOpen(true)} />
-              </span>
-            </>
-          )}
-          {!allDone && (
-            <Button intent="success" icon="saved" loading={pushing} disabled={rows.length === 0} onClick={saveAll}>
-              Save expenses
-            </Button>
-          )}
-        </div>
-      </div>
+    <Stack gap="lg" pb={{ base: 84, sm: 0 }}>
+      <Group justify="space-between" align="flex-start">
+        <div><Title order={2}>Review</Title><Text c="dimmed" size="sm">Import, classify, and save expenses together</Text></div>
+        {rows.length > 0 && <Badge size="lg" color="orange" variant="light">{rows.length} pending</Badge>}
+      </Group>
 
-      {allDone && (
-        <Callout intent="success" icon="tick-circle" style={{ marginBottom: 20 }}>
-          All done.{' '}
-          <Button minimal small onClick={() => navigate('/dashboard')}>Back to dashboard</Button>
-        </Callout>
-      )}
+      <Card withBorder radius="lg" p="lg">
+        <Group justify="space-between" align="center">
+          <div><Text fw={700}>Import AMEX transactions</Text><Text size="xs" c="dimmed">{lastDate.data ? `Last imported through ${lastDate.data}` : 'Duplicate transactions are skipped automatically'}</Text></div>
+          <Group>
+            {import.meta.env.DEV && <Button variant="light" color="teal" leftSection={<IconDownload size={18} />} loading={fetchAmex.isPending} onClick={() => fetchAmex.mutate()}>Fetch AMEX</Button>}
+            <FileButton onChange={file => file && upload.mutate(file)} accept="text/csv,.csv">
+              {props => <Button {...props} leftSection={<IconFileUpload size={18} />} loading={upload.isPending}>Choose CSV</Button>}
+            </FileButton>
+          </Group>
+        </Group>
+        {uploadResult && <Alert mt="md" color={uploadResult.inserted > 0 ? 'green' : 'blue'}>{uploadResult.inserted > 0 ? `${uploadResult.inserted} new transactions imported.` : `No new transactions; ${uploadResult.skipped} duplicates skipped.`}</Alert>}
+        {Boolean(upload.error || fetchAmex.error) && !amexAuthRequired && <Alert mt="md" color="red">Import failed. Please try again.</Alert>}
+        {amexAuthRequired && <Alert mt="md" color="orange"><Group justify="space-between"><Text size="sm">{amexLoginOpened ? 'Done logging in? Try the import again.' : 'Your AMEX session expired.'}</Text><Button size="xs" color="orange" leftSection={<IconLogin size={16} />} onClick={amexLoginOpened ? () => fetchAmex.mutate() : openAmexLogin}>{amexLoginOpened ? 'Try again' : 'Log in'}</Button></Group></Alert>}
+      </Card>
+
+      {saved && rows.length === 0 && <Alert color="green" icon={<IconCheck size={20} />} title="Expenses saved">Your balance and activity are up to date.</Alert>}
 
       {rows.length === 0 ? (
-        <Callout intent="primary" icon="info-sign">
-          No unsynced transactions.{' '}
-          <Button minimal small onClick={() => navigate('/dashboard')}>Upload a CSV</Button>
-        </Callout>
-      ) : (<>
-        {/* Desktop table */}
-        <div className="review-table-wrapper" style={{ background: '#fff', borderRadius: 8, boxShadow: '0 1px 4px rgba(0,0,0,.1)', overflowX: 'auto' }}>
-          <table className="review-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Description</th>
-                <th style={{ textAlign: 'right' }}>Amount</th>
-                <th style={{ minWidth: 240 }}>Split</th>
-                <th>Balance</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(row => <SplitRow key={row.tx.id} row={row} dispatch={dispatch} />)}
-            </tbody>
-          </table>
-        </div>
-        {/* Mobile cards */}
-        <div className="review-cards-wrapper" style={{ background: '#fff', borderRadius: 8, boxShadow: '0 1px 4px rgba(0,0,0,.1)' }}>
-          {rows.map(row => <MobileCard key={row.tx.id} row={row} dispatch={dispatch} />)}
-        </div>
-      </>)}
+        <Paper withBorder radius="lg" p="xl" ta="center"><IconCheck size={36} color="var(--mantine-color-teal-6)" /><Text fw={700} mt="sm">Nothing to review</Text><Text size="sm" c="dimmed">Import a CSV when new transactions are ready.</Text></Paper>
+      ) : (
+        <Stack gap="sm">
+          {rows.map(row => <ExpenseReviewCard key={row.tx.id} row={row} dispatch={dispatch} />)}
+        </Stack>
+      )}
 
-      <Alert
-        isOpen={clearAlertOpen}
-        intent="danger"
-        icon="trash"
-        confirmButtonText="Clear all"
-        cancelButtonText="Cancel"
-        loading={clearing}
-        onConfirm={handleClearAll}
-        onCancel={() => setClearAlertOpen(false)}
-      >
-        <p>Delete all <strong>{pending.length}</strong> unsynced transactions? This cannot be undone.</p>
-      </Alert>
-    </div>
+      {save.error && <Alert color="red">Nothing was saved. Fix any invalid split and try again.</Alert>}
+
+      {rows.length > 0 && (
+        <Paper className="save-bar" shadow="lg" radius="lg" p="sm" withBorder>
+          <Group justify="space-between"><Button variant="subtle" color="red" leftSection={<IconTrash size={17} />} onClick={() => setClearOpen(true)}>Clear</Button><Button size="md" loading={save.isPending} onClick={() => save.mutate()}>Save {rows.length} expenses</Button></Group>
+        </Paper>
+      )}
+
+      <Modal opened={clearOpen} onClose={() => setClearOpen(false)} title="Clear pending expenses?" centered>
+        <Text size="sm">This deletes all {rows.length} imported expenses waiting for review.</Text>
+        <Group justify="flex-end" mt="lg"><Button variant="default" onClick={() => setClearOpen(false)}>Cancel</Button><Button color="red" loading={clear.isPending} onClick={() => clear.mutate()}>Clear all</Button></Group>
+      </Modal>
+    </Stack>
   )
 }
 
-// ─── Mobile card ─────────────────────────────────────────────────────────────
-
-function MobileCard({ row, dispatch }: { row: RowState; dispatch: React.Dispatch<Action> }) {
-  const { tx, splitType, percentYou, exactYou, youOwed, otherOwed, confirmed, error } = row
-  const id = tx.id
-  const isPersonal = splitType === 'personal' || splitType === 'already_added'
-  const unclassified = tx.suggestion.confidence === null && !confirmed
-
+function ExpenseReviewCard({ row, dispatch }: { row: RowState; dispatch: React.Dispatch<Action> }) {
+  const isPersonal = row.splitType === 'personal' || row.splitType === 'already_added'
+  const theyOwe = (Number(row.tx.amount) < 0 ? !row.tx.you_paid : row.tx.you_paid)
   return (
-    <div className="split-card" style={{
-      opacity: confirmed ? 0.45 : 1,
-      borderLeft: unclassified ? '3px solid #ffb366' : '3px solid transparent',
-      background: unclassified ? '#fffcf5' : undefined,
-    }}>
-      {/* Description + amount */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 500, fontSize: 14 }}>{tx.description_raw}</div>
-          <div style={{ fontSize: 12, color: '#738091', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            {tx.card_member && (
-              <Tag minimal icon={tx.you_paid ? 'person' : 'people'} style={{ fontWeight: 600 }}>
-                {tx.you_paid ? 'You paid' : tx.card_member}
-              </Tag>
-            )}
-            <span>{tx.merchant_key}{tx.sub_merchant_key ? ` · ${tx.sub_merchant_key}` : ''}</span>
-          </div>
-          {error && <div style={{ fontSize: 12, color: '#c23030', marginTop: 2 }}>{error}</div>}
-        </div>
-        <div style={{ textAlign: 'right', flexShrink: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 15 }}>{fmt(parseFloat(tx.amount))}</div>
-          <div style={{ fontSize: 12, color: '#738091' }}>{tx.date}</div>
-        </div>
-      </div>
-
-      {/* Split controls */}
-      <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <HTMLSelect
-          disabled={confirmed}
-          value={splitType}
-          options={splitOptions(tx.you_paid)}
-          onChange={e => dispatch({ type: 'SET_SPLIT_TYPE', id, value: e.target.value as SplitType })}
-          style={{ flex: 1 }}
-        />
-        <ConfidenceBadge confidence={tx.suggestion.confidence} />
-      </div>
-      {splitType === 'percent' && (
-        <NumericInput
-          disabled={confirmed}
-          value={percentYou}
-          min={0} max={100} stepSize={1} minorStepSize={0.1}
-          rightElement={<Tag minimal>%</Tag>}
-          style={{ width: 120, marginTop: 6 }}
-          onValueChange={(_, s) => dispatch({ type: 'SET_PERCENT', id, value: s })}
-        />
-      )}
-      {splitType === 'exact' && (
-        <NumericInput
-          disabled={confirmed}
-          value={exactYou}
-          min={0} max={parseFloat(tx.amount)} stepSize={0.01} minorStepSize={0.01}
-          leftIcon="dollar"
-          style={{ width: 120, marginTop: 6 }}
-          onValueChange={(_, s) => dispatch({ type: 'SET_EXACT', id, value: s })}
-        />
-      )}
-
-      {/* Balance + status */}
-      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 13 }}>
-          {isPersonal ? (
-            <span style={{ color: '#738091' }}>—</span>
-          ) : (parseFloat(tx.amount) < 0 ? !tx.you_paid : tx.you_paid) ? (
-            <span className="owed-other">↑ {fmt(Math.abs(otherOwed))} owed to you</span>
-          ) : (
-            <span className="owed-you">↓ {fmt(Math.abs(youOwed))} you owe</span>
-          )}
-        </div>
-        <div>
-          {confirmed ? (
-            isPersonal
-              ? <Tag minimal icon="person">Personal</Tag>
-              : <Tag intent="success" icon="tick">Synced</Tag>
-          ) : error ? (
-            <Tag intent="danger" icon="warning-sign">Error</Tag>
-          ) : (
-            <Tag minimal>Pending</Tag>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Row ─────────────────────────────────────────────────────────────────────
-
-function SplitRow({ row, dispatch }: { row: RowState; dispatch: React.Dispatch<Action> }) {
-  const { tx, splitType, percentYou, exactYou, youOwed, otherOwed, confirmed, error } = row
-  const id = tx.id
-  const isPersonal = splitType === 'personal' || splitType === 'already_added'
-  const unclassified = tx.suggestion.confidence === null && !confirmed
-
-  return (
-    <tr style={{
-      opacity: confirmed ? 0.45 : 1,
-      borderLeft: unclassified ? '3px solid #ffb366' : '3px solid transparent',
-      background: unclassified ? '#fffcf5' : undefined,
-    }}>
-
-      {/* Date */}
-      <td style={{ color: '#738091', whiteSpace: 'nowrap' }}>{tx.date}</td>
-
-      {/* Description + card member + confidence */}
-      <td>
-        <div style={{ fontWeight: 500, fontSize: 14 }}>{tx.description_raw}</div>
-        <div style={{ fontSize: 12, color: '#738091', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          {tx.card_member && (
-            <Tag minimal icon={tx.you_paid ? 'person' : 'people'} style={{ fontWeight: 600 }}>
-              {tx.you_paid ? 'You paid' : tx.card_member}
-            </Tag>
-          )}
-          <span>{tx.merchant_key}{tx.sub_merchant_key ? ` · ${tx.sub_merchant_key}` : ''}</span>
-        </div>
-        {error && <div style={{ fontSize: 12, color: '#c23030', marginTop: 2 }}>{error}</div>}
-      </td>
-
-      {/* Amount */}
-      <td style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
-        {fmt(parseFloat(tx.amount))}
-      </td>
-
-      {/* Split controls */}
-      <td>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <HTMLSelect
-              disabled={confirmed}
-              value={splitType}
-              options={splitOptions(tx.you_paid)}
-              onChange={e => dispatch({ type: 'SET_SPLIT_TYPE', id, value: e.target.value as SplitType })}
-            />
-            <ConfidenceBadge confidence={tx.suggestion.confidence} />
-          </div>
-          {splitType === 'percent' && (
-            <NumericInput
-              disabled={confirmed}
-              value={percentYou}
-              min={0} max={100} stepSize={1} minorStepSize={0.1}
-              rightElement={<Tag minimal>%</Tag>}
-              style={{ width: 110 }}
-              onValueChange={(_, s) => dispatch({ type: 'SET_PERCENT', id, value: s })}
-            />
-          )}
-          {splitType === 'exact' && (
-            <NumericInput
-              disabled={confirmed}
-              value={exactYou}
-              min={0} max={parseFloat(tx.amount)} stepSize={0.01} minorStepSize={0.01}
-              leftIcon="dollar"
-              style={{ width: 110 }}
-              onValueChange={(_, s) => dispatch({ type: 'SET_EXACT', id, value: s })}
-            />
-          )}
-        </div>
-      </td>
-
-      {/* Balance — single column showing direction */}
-      <td style={{ whiteSpace: 'nowrap' }}>
-        {isPersonal ? (
-          <span style={{ color: '#738091', fontSize: 13 }}>—</span>
-        ) : (parseFloat(tx.amount) < 0 ? !tx.you_paid : tx.you_paid) ? (
-          // You received the refund (or you paid the charge) → they owe you
-          <span className="owed-other">↑ {fmt(Math.abs(otherOwed))} owed to you</span>
-        ) : (
-          // They received the refund (or they paid the charge) → you owe them
-          <span className="owed-you">↓ {fmt(Math.abs(youOwed))} you owe</span>
-        )}
-      </td>
-
-      {/* Status */}
-      <td>
-        {confirmed ? (
-          isPersonal
-            ? <Tag minimal icon="person">Personal</Tag>
-            : <Tag intent="success" icon="tick">Synced</Tag>
-        ) : error ? (
-          <Tag intent="danger" icon="warning-sign">Error</Tag>
-        ) : (
-          <Tag minimal>Pending</Tag>
-        )}
-      </td>
-
-    </tr>
+    <Card withBorder radius="lg" p="md" className={row.tx.suggestion.confidence === null ? 'unclassified-card' : undefined}>
+      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+        <Stack gap={6}>
+          <Group justify="space-between" align="flex-start" wrap="nowrap"><div><Text fw={700} size="sm">{row.tx.description_raw}</Text><Text size="xs" c="dimmed">{row.tx.date} · {row.tx.you_paid ? 'You paid' : row.tx.card_member ?? 'They paid'}</Text></div><Text fw={800}>{fmt(Number(row.tx.amount))}</Text></Group>
+          <Group gap="xs"><Badge variant="light" color={row.tx.suggestion.confidence == null ? 'orange' : 'gray'}>{row.tx.suggestion.confidence == null ? 'No history' : `${Math.round(row.tx.suggestion.confidence * 100)}% match`}</Badge><Text size="xs" c="dimmed">{row.tx.merchant_key}</Text></Group>
+          {!isPersonal && <Text size="sm" fw={600} c={theyOwe ? 'teal' : 'indigo'}>{theyOwe ? `${fmt(Math.abs(row.otherOwed))} owed to you` : `${fmt(Math.abs(row.youOwed))} you owe`}</Text>}
+        </Stack>
+        <SplitControls splitType={row.splitType} percent={row.percentYou} exact={row.exactYou} amount={Math.abs(Number(row.tx.amount))} allowPersonal onSplitType={value => dispatch({ type: 'split', id: row.tx.id, value })} onPercent={value => dispatch({ type: 'percent', id: row.tx.id, value })} onExact={value => dispatch({ type: 'exact', id: row.tx.id, value })} />
+      </SimpleGrid>
+    </Card>
   )
 }

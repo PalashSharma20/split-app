@@ -47,6 +47,15 @@ export interface ConfirmResponse {
   other_owed: number
 }
 
+export interface BatchConfirmItem extends ConfirmRequest {
+  transaction_id: number
+}
+
+export interface BatchConfirmResponse {
+  confirmed: Array<ConfirmResponse & { transaction_id: number }>
+  balance: BalanceResult
+}
+
 export interface SyncedTransaction {
   id: number
   date: string
@@ -55,6 +64,7 @@ export interface SyncedTransaction {
   merchant_key: string
   sub_merchant_key: string | null
   card_member: string | null
+  paid_by: string
   splitwise_expense_id: string | null
   split_type: SplitType | null
   percent_you: number | null

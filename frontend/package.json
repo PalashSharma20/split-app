@@ -10,8 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@blueprintjs/core": "^6.9.1",
-    "@blueprintjs/icons": "^6.6.0",
+    "@mantine/core": "^9.5.2",
+    "@mantine/hooks": "^9.5.2",
+    "@tabler/icons-react": "^3.46.0",
+    "@tanstack/react-query": "^5.102.2",
     "axios": "^1.13.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

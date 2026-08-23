@@ -1,5 +1,5 @@
 import client, { localClient } from './client'
-import type { BalanceResult, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, RecurringExpense, RecurringExpenseRequest, SyncedPage, Transaction, UploadResult } from '../types'
+import type { BalanceResult, BatchConfirmItem, BatchConfirmResponse, ConfirmRequest, ConfirmResponse, CustomExpenseRequest, EditTransactionRequest, RecurringExpense, RecurringExpenseRequest, SyncedPage, Transaction, UploadResult } from '../types'
 
 export async function uploadCsv(file: File): Promise<UploadResult> {
   const form = new FormData()
@@ -18,6 +18,11 @@ export async function confirmTransaction(
   body: ConfirmRequest,
 ): Promise<ConfirmResponse> {
   const res = await client.post<ConfirmResponse>(`/transactions/${id}/confirm`, body)
+  return res.data
+}
+
+export async function batchConfirmTransactions(items: BatchConfirmItem[]): Promise<BatchConfirmResponse> {
+  const res = await client.post<BatchConfirmResponse>('/transactions/batch-confirm', { items })
   return res.data
 }
 

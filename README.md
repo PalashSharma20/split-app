@@ -13,7 +13,7 @@ A personal web app for two users to review AMEX transactions, add shared expense
 ## Tech stack
 
 - **Backend** — FastAPI + SQLAlchemy + SQLite (Postgres in prod), deployed to Fly.io
-- **Frontend** — React 19 + TypeScript + BlueprintJS, deployed to Netlify
+- **Frontend** — React 19 + TypeScript + Mantine + TanStack Query, deployed to Netlify
 - **Auth** — Google OAuth with signed session cookies
 
 ## Local development

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional
 from datetime import date as DateType
 from app.models import SplitType
@@ -110,6 +110,30 @@ class BalanceResult(BaseModel):
     settlement_from: Optional[str] = None
     settlement_to: Optional[str] = None
     settlement_amount: float = 0.0
+
+
+class BatchConfirmItem(ConfirmRequest):
+    transaction_id: int
+
+
+class BatchConfirmRequest(BaseModel):
+    items: list[BatchConfirmItem] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_unique_transactions(self):
+        transaction_ids = [item.transaction_id for item in self.items]
+        if len(transaction_ids) != len(set(transaction_ids)):
+            raise ValueError("Each transaction may only appear once in a batch")
+        return self
+
+
+class BatchConfirmResult(ConfirmResponse):
+    transaction_id: int
+
+
+class BatchConfirmResponse(BaseModel):
+    confirmed: list[BatchConfirmResult]
+    balance: BalanceResult
 
 
 class MarkSettlementRequest(BaseModel):

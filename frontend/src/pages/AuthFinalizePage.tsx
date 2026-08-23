@@ -1,4 +1,4 @@
-import { Spinner } from '@blueprintjs/core'
+import { Center, Loader } from '@mantine/core'
 import { useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import client from '../api/client'
@@ -18,9 +18,9 @@ export default function AuthFinalizePage() {
     // Call through the proxy (Vite in dev, Netlify in prod) so the auth_session
     // cookie is set on the frontend's own origin — avoids cross-site cookie blocks.
     client.get(`/auth/finalize?token=${encodeURIComponent(token)}`)
-      .then(() => { window.location.replace('/dashboard') })
+      .then(() => { window.location.replace('/overview') })
       .catch(() => navigate('/login', { replace: true }))
   }, [])
 
-  return <div className="page-center"><Spinner /></div>
+  return <Center mih="100dvh"><Loader /></Center>
 }
